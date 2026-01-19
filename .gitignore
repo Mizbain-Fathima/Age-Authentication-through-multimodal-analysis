@@ -1,0 +1,5 @@
+venv/
+audio-data/
+image-data/
+logs/
+models/
