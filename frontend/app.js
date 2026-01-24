@@ -1,35 +1,38 @@
 /**
- * Age Authentication System - Frontend Application
- * Handles webcam capture, audio recording, and API interactions
+ * Multimodal Age Authentication - Frontend
+ * Simplified version for /api/process endpoint
  */
 
 // =====================
 // Configuration
 // =====================
 
-const API_BASE = window.location.origin + '/api';
+const API_BASE = 'http://localhost:8000';
 const MAX_RECORDING_TIME = 15; // seconds
-const FRAME_CAPTURE_INTERVAL = 100; // ms
 
 // =====================
 // State Management
 // =====================
 
 const state = {
-    currentStep: 1,
-    captchaId: null,
-    captchaText: null,
-    captchaExpiry: null,
-    isRecording: false,
-    mediaStream: null,
+    videoStream: null,
+    audioStream: null,
+    mediaStream: null, // Combined for preview
+    videoRecorder: null,
     audioContext: null,
-    analyser: null,
-    recordedFrames: [],
-    audioChunks: [],
-    mediaRecorder: null,
+    audioSource: null,
+    audioProcessor: null,
+    audioSamples: [], // PCM Float32Array samples
+    videoChunks: [],
+    isRecording: false,
     recordingStartTime: null,
     recordingTimer: null,
-    captchaTimer: null
+    captchaId: null,
+    captchaSentence: null,
+    captchaExpiry: null,
+    captchaTimer: null,
+    uiState: 'idle', // idle, recording, processing, success, failed
+    MIN_RECORDING_DURATION: 5 // seconds
 };
 
 // =====================
@@ -37,49 +40,35 @@ const state = {
 // =====================
 
 const elements = {
-    // Steps
-    steps: document.querySelectorAll('.step'),
-    stepConnectors: document.querySelectorAll('.step-connector'),
-    stepSections: document.querySelectorAll('.step-section'),
-    
-    // Step 1
-    btnGetCaptcha: document.getElementById('btn-get-captcha'),
-    
-    // Step 2
-    captchaText: document.getElementById('captcha-text'),
-    captchaTimer: document.getElementById('captcha-timer'),
-    videoPreview: document.getElementById('video-preview'),
-    videoOverlay: document.getElementById('video-overlay'),
-    videoStatus: document.getElementById('video-status'),
-    audioCanvas: document.getElementById('audio-canvas'),
-    audioLevelBar: document.getElementById('audio-level-bar'),
-    btnRecord: document.getElementById('btn-record'),
-    recordingTimer: document.getElementById('recording-timer'),
-    
-    // Step 3
-    procFace: document.getElementById('proc-face'),
-    procVoice: document.getElementById('proc-voice'),
-    procLiveness: document.getElementById('proc-liveness'),
-    procAge: document.getElementById('proc-age'),
-    
-    // Step 4
-    resultIcon: document.getElementById('result-icon'),
-    resultTitle: document.getElementById('result-title'),
-    resultBadge: document.getElementById('result-badge'),
-    ageNumber: document.getElementById('age-number'),
-    ageGroup: document.getElementById('age-group'),
-    faceAge: document.getElementById('face-age'),
-    voiceAge: document.getElementById('voice-age'),
-    faceLiveness: document.getElementById('face-liveness'),
-    faceLivenessBar: document.getElementById('face-liveness-bar'),
-    voiceLiveness: document.getElementById('voice-liveness'),
-    voiceLivenessBar: document.getElementById('voice-liveness-bar'),
-    lipSync: document.getElementById('lip-sync'),
-    lipSyncBar: document.getElementById('lip-sync-bar'),
-    confidenceFill: document.getElementById('confidence-fill'),
-    confidenceText: document.getElementById('confidence-text'),
-    adultStatus: document.getElementById('adult-status'),
-    btnRestart: document.getElementById('btn-restart')
+    videoPreview: document.getElementById('videoPreview'),
+    videoStatus: document.getElementById('videoStatus'),
+    btnStart: document.getElementById('btnStart'),
+    btnStop: document.getElementById('btnStop'),
+    captchaSection: document.getElementById('captchaSection'),
+    captchaText: document.getElementById('captchaText'),
+    captchaTimer: document.getElementById('captchaTimer'),
+    statusSection: document.getElementById('statusSection'),
+    statusIcon: document.getElementById('statusIcon'),
+    statusText: document.getElementById('statusText'),
+    resultsSection: document.getElementById('resultsSection'),
+    resultCard: document.getElementById('resultCard'),
+    resultBadge: document.getElementById('resultBadge'),
+    badgeIcon: document.getElementById('badgeIcon'),
+    badgeText: document.getElementById('badgeText'),
+    ageNumber: document.getElementById('ageNumber'),
+    adultStatus: document.getElementById('adultStatus'),
+    adultIcon: document.getElementById('adultIcon'),
+    adultText: document.getElementById('adultText'),
+    confidenceBar: document.getElementById('confidenceBar'),
+    confidenceValue: document.getElementById('confidenceValue'),
+    faceLivenessBar: document.getElementById('faceLivenessBar'),
+    faceLivenessValue: document.getElementById('faceLivenessValue'),
+    voiceLivenessBar: document.getElementById('voiceLivenessBar'),
+    voiceLivenessValue: document.getElementById('voiceLivenessValue'),
+    lipSyncBar: document.getElementById('lipSyncBar'),
+    lipSyncValue: document.getElementById('lipSyncValue'),
+    errorMessage: document.getElementById('errorMessage'),
+    btnRestart: document.getElementById('btnRestart')
 };
 
 // =====================
@@ -90,87 +79,206 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeApp();
 });
 
-function initializeApp() {
-    // Event listeners
-    elements.btnGetCaptcha.addEventListener('click', getCaptcha);
-    elements.btnRecord.addEventListener('click', toggleRecording);
+async function initializeApp() {
+    // Set up event listeners
+    elements.btnStart.addEventListener('click', startVerification);
+    elements.btnStop.addEventListener('click', stopAndVerify);
     elements.btnRestart.addEventListener('click', restart);
     
-    console.log('Age Authentication System initialized');
-}
-
-// =====================
-// Step Navigation
-// =====================
-
-function goToStep(stepNumber) {
-    state.currentStep = stepNumber;
-    
-    // Update step indicators
-    elements.steps.forEach((step, index) => {
-        const stepNum = index + 1;
-        step.classList.remove('active', 'completed');
-        
-        if (stepNum < stepNumber) {
-            step.classList.add('completed');
-        } else if (stepNum === stepNumber) {
-            step.classList.add('active');
-        }
-    });
-    
-    // Update connectors
-    elements.stepConnectors.forEach((connector, index) => {
-        connector.classList.toggle('completed', index < stepNumber - 1);
-    });
-    
-    // Show/hide sections
-    elements.stepSections.forEach(section => {
-        section.classList.remove('active');
-    });
-    
-    const sectionId = ['step-captcha', 'step-recording', 'step-processing', 'step-results'][stepNumber - 1];
-    document.getElementById(sectionId).classList.add('active');
-}
-
-// =====================
-// Step 1: Get Captcha
-// =====================
-
-async function getCaptcha() {
+    // Initialize camera and microphone
     try {
-        elements.btnGetCaptcha.disabled = true;
-        elements.btnGetCaptcha.innerHTML = '<span class="btn-icon">⏳</span> Loading...';
+        await initializeMedia();
+    } catch (error) {
+        console.error('Failed to initialize media:', error);
+        showError('Unable to access camera/microphone. Please grant permissions and refresh the page.');
+    }
+}
+
+// =====================
+// Media Initialization
+// =====================
+
+async function initializeMedia() {
+    try {
+        // Request video and audio streams separately
+        state.videoStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                facingMode: 'user'
+            }
+        });
         
-        const response = await fetch(`${API_BASE}/captcha?complexity=medium`);
+        state.audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+        
+        // Combine for preview
+        const videoTrack = state.videoStream.getVideoTracks()[0];
+        const audioTrack = state.audioStream.getAudioTracks()[0];
+        state.mediaStream = new MediaStream([videoTrack, audioTrack]);
+        
+        // Set video preview
+        elements.videoPreview.srcObject = state.mediaStream;
+        
+        // Update status
+        updateVideoStatus('Camera Ready', 'ready');
+        
+        console.log('Media initialized successfully');
+    } catch (error) {
+        console.error('Error accessing media:', error);
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            alert('Camera and microphone access is required. Please grant permissions and refresh the page.');
+        } else if (error.name === 'NotFoundError') {
+            alert('No camera or microphone found. Please connect a device and refresh.');
+        } else {
+            alert('Unable to access camera/microphone. Please check your device settings.');
+        }
+        throw error;
+    }
+}
+
+function updateVideoStatus(text, status) {
+    const statusText = elements.videoStatus.querySelector('.status-text');
+    const statusDot = elements.videoStatus.querySelector('.status-dot');
+    
+    if (statusText) statusText.textContent = text;
+    if (statusDot) {
+        statusDot.className = 'status-dot';
+        statusDot.classList.add(`status-${status}`);
+    }
+}
+
+// =====================
+// Recording Logic
+// =====================
+
+async function startVerification() {
+    if (!state.mediaStream) {
+        showError('Camera/microphone not available. Please refresh the page.');
+        return;
+    }
+    
+    try {
+        // Disable button
+        elements.btnStart.disabled = true;
+        elements.btnStart.innerHTML = '<span class="btn-icon">⏳</span> Getting captcha...';
+        
+        // Step 1: Get captcha from backend
+        const formData = new FormData();
+        formData.append('action', 'start');
+        
+        const response = await fetch(`${API_BASE}/api/process`, {
+            method: 'POST',
+            body: formData
+        });
         
         if (!response.ok) {
-            throw new Error('Failed to get captcha');
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         
-        const data = await response.json();
+        const result = await response.json();
         
-        state.captchaId = data.captcha_id;
-        state.captchaText = data.sentence;
-        state.captchaExpiry = Date.now() + (data.expires_in * 1000);
+        if (result.action !== 'start' || !result.captcha_sentence) {
+            throw new Error('Failed to get captcha sentence');
+        }
+        
+        // Store captcha
+        state.captchaId = result.captcha_id;
+        state.captchaSentence = result.captcha_sentence;
+        state.captchaExpiry = Date.now() + (result.expires_in * 1000);
         
         // Display captcha
-        elements.captchaText.textContent = data.sentence;
+        elements.captchaText.textContent = result.captcha_sentence;
+        elements.captchaSection.style.display = 'block';
         
-        // Start expiry timer
+        // Start captcha timer
         startCaptchaTimer();
         
-        // Initialize media
-        await initializeMedia();
+        // Step 2: Start recording
+        await startRecording();
         
-        // Move to step 2
-        goToStep(2);
+        // Update button
+        elements.btnStart.disabled = true;
+        elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Recording...';
         
+        console.log('Verification started with captcha');
     } catch (error) {
-        console.error('Error getting captcha:', error);
-        alert('Failed to get verification phrase. Please try again.');
-    } finally {
-        elements.btnGetCaptcha.disabled = false;
-        elements.btnGetCaptcha.innerHTML = '<span class="btn-icon">⚡</span> Generate Verification Phrase';
+        console.error('Error starting verification:', error);
+        showError(`Failed to start verification: ${error.message}`);
+        elements.btnStart.disabled = false;
+        elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+    }
+}
+
+async function startRecording() {
+    try {
+        // Reset previous recording
+        state.videoChunks = [];
+        state.audioSamples = [];
+        
+        // Create video recorder
+        const videoOptions = {
+            mimeType: 'video/webm;codecs=vp8',
+            videoBitsPerSecond: 2500000
+        };
+        if (!MediaRecorder.isTypeSupported(videoOptions.mimeType)) {
+            videoOptions.mimeType = 'video/webm';
+        }
+        
+        state.videoRecorder = new MediaRecorder(state.videoStream, videoOptions);
+        state.videoRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                state.videoChunks.push(event.data);
+            }
+        };
+        
+        // Setup Web Audio API for PCM capture
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        state.audioContext = new AudioContext({ sampleRate: 16000 });
+        
+        // Create source from audio stream
+        state.audioSource = state.audioContext.createMediaStreamSource(state.audioStream);
+        
+        // Create script processor for PCM capture (4096 buffer size)
+        const bufferSize = 4096;
+        state.audioProcessor = state.audioContext.createScriptProcessor(bufferSize, 1, 1);
+        
+        state.audioProcessor.onaudioprocess = (e) => {
+            if (state.isRecording) {
+                const inputData = e.inputBuffer.getChannelData(0);
+                // Copy Float32Array samples
+                const samples = new Float32Array(inputData.length);
+                samples.set(inputData);
+                state.audioSamples.push(samples);
+            }
+        };
+        
+        // Connect audio pipeline
+        state.audioSource.connect(state.audioProcessor);
+        state.audioProcessor.connect(state.audioContext.destination);
+        
+        // Start video recorder
+        state.videoRecorder.start(100);
+        state.isRecording = true;
+        state.recordingStartTime = Date.now();
+        state.uiState = 'recording';
+        
+        // Update UI
+        elements.btnStop.disabled = false;
+        updateVideoStatus('Recording...', 'recording');
+        
+        // Start recording timer
+        startRecordingTimer();
+        
+        console.log('Recording started (video + Web Audio API)');
+    } catch (error) {
+        console.error('Error starting recording:', error);
+        throw error;
     }
 }
 
@@ -184,419 +292,505 @@ function startCaptchaTimer() {
         const minutes = Math.floor(remaining / 60000);
         const seconds = Math.floor((remaining % 60000) / 1000);
         
-        elements.captchaTimer.textContent = 
-            `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        
-        if (remaining <= 0) {
+        if (remaining > 0) {
+            elements.captchaTimer.textContent = `Expires in: ${minutes}:${seconds.toString().padStart(2, '0')}`;
+            elements.captchaTimer.style.display = 'block';
+        } else {
             clearInterval(state.captchaTimer);
-            alert('Verification phrase expired. Please get a new one.');
-            restart();
+            elements.captchaTimer.textContent = 'Captcha expired';
+            if (state.isRecording) {
+                stopAndVerify();
+            }
         }
     }, 1000);
 }
 
-// =====================
-// Step 2: Media Handling
-// =====================
-
-async function initializeMedia() {
+function stopAndVerify() {
+    if (!state.isRecording) {
+        return;
+    }
+    
+    // Check minimum duration
+    const duration = (Date.now() - state.recordingStartTime) / 1000;
+    if (duration < state.MIN_RECORDING_DURATION) {
+        const remaining = (state.MIN_RECORDING_DURATION - duration).toFixed(1);
+        showError(`Please record for at least ${state.MIN_RECORDING_DURATION} seconds. ${remaining}s remaining.`);
+        return;
+    }
+    
     try {
-        // Get user media
-        state.mediaStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                facingMode: 'user'
-            },
-            audio: true
-        });
+        // Stop recording
+        state.isRecording = false;
         
-        // Set up video preview
-        elements.videoPreview.srcObject = state.mediaStream;
+        // Stop video recorder
+        if (state.videoRecorder && state.videoRecorder.state !== 'inactive') {
+            state.videoRecorder.stop();
+        }
         
-        // Set up audio visualization
-        setupAudioVisualization();
+        // Stop audio processing
+        if (state.audioProcessor) {
+            state.audioProcessor.disconnect();
+        }
+        if (state.audioSource) {
+            state.audioSource.disconnect();
+        }
         
-        // Update status
-        elements.videoStatus.querySelector('.status-text').textContent = 'Camera Ready';
+        // Stop timer
+        if (state.recordingTimer) {
+            clearInterval(state.recordingTimer);
+            state.recordingTimer = null;
+        }
+        
+        // Update UI state
+        state.uiState = 'processing';
+        elements.btnStart.disabled = true;
+        elements.btnStop.disabled = true;
+        updateVideoStatus('Processing...', 'processing');
+        
+        // Show processing status
+        showProcessingStatus('Decoding media...');
+        
+        // Wait for video recorder to finish, then process
+        if (state.videoRecorder) {
+            state.videoRecorder.onstop = () => {
+                processRecording();
+            };
+        } else {
+            processRecording();
+        }
         
     } catch (error) {
-        console.error('Error accessing media:', error);
-        alert('Unable to access camera/microphone. Please grant permissions and try again.');
-        throw error;
+        console.error('Error stopping recording:', error);
+        state.uiState = 'failed';
+        showError('Failed to stop recording. Please try again.');
+        hideProcessingStatus();
+        elements.btnStart.disabled = false;
+        elements.btnStop.disabled = false;
     }
 }
 
-function setupAudioVisualization() {
-    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    state.analyser = state.audioContext.createAnalyser();
-    state.analyser.fftSize = 256;
-    
-    const source = state.audioContext.createMediaStreamSource(state.mediaStream);
-    source.connect(state.analyser);
-    
-    visualizeAudio();
-}
-
-function visualizeAudio() {
-    if (!state.analyser) return;
-    
-    const canvas = elements.audioCanvas;
-    const ctx = canvas.getContext('2d');
-    const bufferLength = state.analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-    
-    function draw() {
-        requestAnimationFrame(draw);
-        
-        state.analyser.getByteFrequencyData(dataArray);
-        
-        // Clear canvas
-        ctx.fillStyle = '#0a0a0f';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // Draw frequency bars
-        const barWidth = canvas.width / bufferLength * 2.5;
-        let x = 0;
-        
-        for (let i = 0; i < bufferLength; i++) {
-            const barHeight = (dataArray[i] / 255) * canvas.height;
-            
-            // Gradient color
-            const gradient = ctx.createLinearGradient(0, canvas.height, 0, 0);
-            gradient.addColorStop(0, '#00f5ff');
-            gradient.addColorStop(1, '#ff00aa');
-            
-            ctx.fillStyle = gradient;
-            ctx.fillRect(x, canvas.height - barHeight, barWidth - 1, barHeight);
-            
-            x += barWidth;
-        }
-        
-        // Update level bar
-        const average = dataArray.reduce((a, b) => a + b) / bufferLength;
-        const levelPercent = (average / 255) * 100;
-        elements.audioLevelBar.style.width = `${levelPercent}%`;
-    }
-    
-    draw();
-}
-
-function toggleRecording() {
-    if (state.isRecording) {
-        stopRecording();
-    } else {
-        startRecording();
-    }
-}
-
-function startRecording() {
-    state.isRecording = true;
-    state.recordedFrames = [];
-    state.audioChunks = [];
-    state.recordingStartTime = Date.now();
-    
-    // Update UI
-    elements.btnRecord.classList.add('recording');
-    elements.btnRecord.querySelector('.record-text').textContent = 'Stop Recording';
-    elements.recordingTimer.classList.add('active');
-    
-    // Start audio recording
-    const audioTracks = state.mediaStream.getAudioTracks();
-    const audioStream = new MediaStream(audioTracks);
-    state.mediaRecorder = new MediaRecorder(audioStream, {
-        mimeType: 'audio/webm'
-    });
-    
-    state.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-            state.audioChunks.push(event.data);
-        }
-    };
-    
-    state.mediaRecorder.start(100);
-    
-    // Start video frame capture
-    captureFrames();
-    
-    // Start recording timer
-    state.recordingTimer = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - state.recordingStartTime) / 1000);
-        const minutes = Math.floor(elapsed / 60);
-        const seconds = elapsed % 60;
-        
-        elements.recordingTimer.textContent = 
-            `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-        
-        // Auto-stop at max time
-        if (elapsed >= MAX_RECORDING_TIME) {
-            stopRecording();
-        }
-    }, 1000);
-}
-
-function captureFrames() {
-    if (!state.isRecording) return;
-    
-    const canvas = document.createElement('canvas');
-    const video = elements.videoPreview;
-    
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0);
-    
-    // Store frame as base64
-    const frameData = canvas.toDataURL('image/jpeg', 0.8);
-    state.recordedFrames.push(frameData);
-    
-    // Continue capturing
-    setTimeout(captureFrames, FRAME_CAPTURE_INTERVAL);
-}
-
-function stopRecording() {
-    state.isRecording = false;
-    
-    // Update UI
-    elements.btnRecord.classList.remove('recording');
-    elements.btnRecord.querySelector('.record-text').textContent = 'Start Recording';
-    elements.recordingTimer.classList.remove('active');
-    
-    // Stop timers
+function startRecordingTimer() {
     if (state.recordingTimer) {
         clearInterval(state.recordingTimer);
     }
     
-    // Stop media recorder
-    if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-        state.mediaRecorder.stop();
-    }
-    
-    // Wait for final data and submit
-    setTimeout(() => {
-        submitVerification();
-    }, 500);
+    state.recordingTimer = setInterval(() => {
+        const elapsed = (Date.now() - state.recordingStartTime) / 1000;
+        const remaining = MAX_RECORDING_TIME - Math.floor(elapsed);
+        const minRemaining = Math.max(0, state.MIN_RECORDING_DURATION - elapsed);
+        
+        if (remaining <= 0) {
+            // Auto-stop after max time
+            stopAndVerify();
+        } else if (minRemaining > 0) {
+            updateVideoStatus(`Recording... (min ${minRemaining.toFixed(1)}s)`, 'recording');
+            elements.btnStop.disabled = true;
+        } else {
+            updateVideoStatus(`Recording... ${remaining}s remaining`, 'recording');
+            elements.btnStop.disabled = false;
+        }
+    }, 100);
 }
 
 // =====================
-// Step 3: Process Verification
+// WAV Encoding
 // =====================
 
-async function submitVerification() {
-    goToStep(3);
+function encodeWAV(samples, sampleRate = 16000) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
     
-    // Reset processing indicators
-    resetProcessingSteps();
+    // WAV header
+    const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true); // PCM format
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // Byte rate
+    view.setUint16(32, 2, true); // Block align
+    view.setUint16(34, 16, true); // 16-bit
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    
+    // Convert Float32 to Int16
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        offset += 2;
+    }
+    
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// =====================
+// API Communication
+// =====================
+
+async function processRecording() {
+    if (state.videoChunks.length === 0 && state.audioSamples.length === 0) {
+        state.uiState = 'failed';
+        showError('No recording data available. Please try again.');
+        hideProcessingStatus();
+        updateUIState();
+        return;
+    }
+    
+    if (!state.captchaId || !state.captchaSentence) {
+        state.uiState = 'failed';
+        showError('Captcha not available. Please start a new verification.');
+        hideProcessingStatus();
+        updateUIState();
+        return;
+    }
     
     try {
-        // Create form data
+        // Create video blob
+        const videoBlob = state.videoChunks.length > 0 
+            ? new Blob(state.videoChunks, { type: 'video/webm' })
+            : null;
+        
+        // Convert PCM samples to WAV
+        let audioBlob = null;
+        if (state.audioSamples.length > 0) {
+            // Concatenate all Float32Array samples
+            const totalLength = state.audioSamples.reduce((sum, arr) => sum + arr.length, 0);
+            const concatenated = new Float32Array(totalLength);
+            let offset = 0;
+            for (const samples of state.audioSamples) {
+                concatenated.set(samples, offset);
+                offset += samples.length;
+            }
+            audioBlob = encodeWAV(concatenated, 16000);
+        }
+        
+        if (!videoBlob && !audioBlob) {
+            state.uiState = 'failed';
+            showError('No valid recording data. Please try again.');
+            hideProcessingStatus();
+            updateUIState();
+            return;
+        }
+        
+        // Create FormData
         const formData = new FormData();
+        formData.append('action', 'verify');
         formData.append('captcha_id', state.captchaId);
-        
-        // Add video frames
-        if (state.recordedFrames.length > 0) {
-            // Send frames as JSON array
-            formData.append('video_frames', JSON.stringify(state.recordedFrames));
+        if (videoBlob) {
+            formData.append('video_file', videoBlob, 'video.webm');
         }
-        
-        // Add audio
-        if (state.audioChunks.length > 0) {
-            const audioBlob = new Blob(state.audioChunks, { type: 'audio/webm' });
-            formData.append('audio', audioBlob, 'recording.webm');
+        if (audioBlob) {
+            formData.append('audio_file', audioBlob, 'audio.wav');
         }
+        formData.append('sample_rate', '16000');
         
-        // Update processing steps
-        await simulateProcessingStep('proc-face', 800);
-        await simulateProcessingStep('proc-voice', 600);
-        await simulateProcessingStep('proc-liveness', 700);
+        // Calculate duration
+        const duration = (Date.now() - state.recordingStartTime) / 1000;
+        formData.append('duration', duration.toString());
         
-        // Submit to API
-        const response = await fetch(`${API_BASE}/verify`, {
+        console.log('Sending verification request to API...');
+        state.uiState = 'processing';
+        updateProcessingStatus('Analyzing face...');
+        updateUIState();
+        
+        // Send to API
+        const response = await fetch(`${API_BASE}/api/process`, {
             method: 'POST',
             body: formData
         });
         
-        await simulateProcessingStep('proc-age', 500);
-        
         if (!response.ok) {
-            throw new Error('Verification request failed');
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         
+        updateProcessingStatus('Processing voice...');
         const result = await response.json();
-        displayResults(result);
+        
+        console.log('API Response:', result);
+        
+        // Transition UI state based on result
+        if (result.success === true) {
+            state.uiState = 'success';
+            updateProcessingStatus('Finalizing result...');
+            await new Promise(resolve => setTimeout(resolve, 300));
+            hideProcessingStatus();
+            clearCaptcha();
+            displayResults(result);
+        } else {
+            state.uiState = 'failed';
+            hideProcessingStatus();
+            showError(result.message || 'Verification failed');
+        }
+        
+        updateUIState();
         
     } catch (error) {
-        console.error('Verification error:', error);
-        displayError(error.message);
-    } finally {
-        cleanup();
+        console.error('Error processing recording:', error);
+        state.uiState = 'failed';
+        hideProcessingStatus();
+        showError(`Failed to process verification: ${error.message}`);
+        updateUIState();
     }
 }
 
-function resetProcessingSteps() {
-    ['proc-face', 'proc-voice', 'proc-liveness', 'proc-age'].forEach(id => {
-        const step = document.getElementById(id);
-        step.classList.remove('completed');
-        step.querySelector('.proc-icon').textContent = '⏳';
-    });
-}
-
-async function simulateProcessingStep(stepId, delay) {
-    return new Promise(resolve => {
-        setTimeout(() => {
-            const step = document.getElementById(stepId);
-            step.classList.add('completed');
-            step.querySelector('.proc-icon').textContent = '✓';
-            resolve();
-        }, delay);
-    });
-}
-
-// =====================
-// Step 4: Display Results
-// =====================
-
-function displayResults(result) {
-    goToStep(4);
-    
-    const { success, liveness, age, overall_confidence } = result;
-    
-    // Main result
-    if (success) {
-        elements.resultIcon.textContent = '✅';
-        elements.resultTitle.textContent = 'Verification Successful';
-        elements.resultBadge.className = 'result-badge verified';
-        elements.resultBadge.innerHTML = '<span class="badge-icon">✓</span><span class="badge-text">VERIFIED</span>';
-    } else {
-        elements.resultIcon.textContent = '❌';
-        elements.resultTitle.textContent = 'Verification Failed';
-        elements.resultBadge.className = 'result-badge failed';
-        elements.resultBadge.innerHTML = '<span class="badge-icon">✗</span><span class="badge-text">FAILED</span>';
-    }
-    
-    // Age display
-    const estimatedAge = Math.round(age.estimated_age);
-    elements.ageNumber.textContent = estimatedAge || '--';
-    
-    // Age group
-    const groupBadge = elements.ageGroup.querySelector('.group-badge');
-    groupBadge.className = `group-badge ${age.age_group}`;
-    groupBadge.textContent = capitalizeFirst(age.age_group);
-    
-    // Detailed metrics
-    elements.faceAge.textContent = age.face_age ? Math.round(age.face_age) : '--';
-    elements.voiceAge.textContent = age.voice_age ? Math.round(age.voice_age) : '--';
-    
-    // Liveness scores
-    const faceLiveScore = Math.round(liveness.face_liveness_score * 100);
-    const voiceLiveScore = Math.round(liveness.voice_liveness_score * 100);
-    const lipSyncScore = Math.round(liveness.lip_sync_score * 100);
-    const confidenceScore = Math.round(overall_confidence * 100);
-    
-    animateProgress('face-liveness-bar', 'face-liveness', faceLiveScore);
-    animateProgress('voice-liveness-bar', 'voice-liveness', voiceLiveScore);
-    animateProgress('lip-sync-bar', 'lip-sync', lipSyncScore);
-    
-    // Overall confidence
-    setTimeout(() => {
-        elements.confidenceFill.style.width = `${confidenceScore}%`;
-        elements.confidenceText.textContent = `${confidenceScore}%`;
-    }, 500);
-    
-    // Adult status
-    if (age.is_adult) {
-        elements.adultStatus.className = 'adult-status verified';
-        elements.adultStatus.innerHTML = `
-            <span class="status-icon">✓</span>
-            <span class="status-text">Age 18+ Verified (${Math.round(age.adult_confidence * 100)}% confidence)</span>
-        `;
-    } else {
-        elements.adultStatus.className = 'adult-status failed';
-        elements.adultStatus.innerHTML = `
-            <span class="status-icon">✗</span>
-            <span class="status-text">Under 18 Detected</span>
-        `;
-    }
-}
-
-function animateProgress(barId, textId, value) {
-    const bar = document.getElementById(barId);
-    const text = document.getElementById(textId);
-    
-    setTimeout(() => {
-        bar.style.width = `${value}%`;
-        text.textContent = `${value}%`;
-    }, 300);
-}
-
-function displayError(message) {
-    goToStep(4);
-    
-    elements.resultIcon.textContent = '⚠️';
-    elements.resultTitle.textContent = 'Error Occurred';
-    elements.resultBadge.className = 'result-badge failed';
-    elements.resultBadge.innerHTML = `<span class="badge-icon">!</span><span class="badge-text">ERROR</span>`;
-    
-    elements.ageNumber.textContent = '--';
-    
-    // Show error message
-    const groupBadge = elements.ageGroup.querySelector('.group-badge');
-    groupBadge.className = 'group-badge';
-    groupBadge.textContent = message;
-}
-
-// =====================
-// Cleanup & Restart
-// =====================
-
-function cleanup() {
-    // Stop media stream
-    if (state.mediaStream) {
-        state.mediaStream.getTracks().forEach(track => track.stop());
-        state.mediaStream = null;
-    }
-    
-    // Clear timers
+function clearCaptcha() {
+    state.captchaId = null;
+    state.captchaSentence = null;
+    state.captchaExpiry = null;
     if (state.captchaTimer) {
         clearInterval(state.captchaTimer);
+        state.captchaTimer = null;
     }
-    if (state.recordingTimer) {
-        clearInterval(state.recordingTimer);
+    elements.captchaSection.style.display = 'none';
+    elements.captchaText.textContent = '';
+    elements.captchaTimer.textContent = '';
+    elements.captchaTimer.style.display = 'none';
+}
+
+// =====================
+// UI Updates
+// =====================
+
+function showProcessingStatus(message = 'Processing verification...') {
+    elements.statusSection.style.display = 'block';
+    elements.statusIcon.textContent = '⏳';
+    elements.statusText.textContent = message;
+    elements.resultsSection.style.display = 'none';
+}
+
+function updateProcessingStatus(message) {
+    if (elements.statusSection.style.display !== 'none') {
+        elements.statusText.textContent = message;
+    }
+}
+
+function updateUIState() {
+    // Update button states
+    if (state.uiState === 'idle') {
+        elements.btnStart.disabled = false;
+        elements.btnStop.disabled = true;
+    } else if (state.uiState === 'recording') {
+        elements.btnStart.disabled = true;
+        elements.btnStop.disabled = false;
+    } else if (state.uiState === 'processing') {
+        elements.btnStart.disabled = true;
+        elements.btnStop.disabled = true;
+    } else if (state.uiState === 'success' || state.uiState === 'failed') {
+        elements.btnStart.disabled = false;
+        elements.btnStop.disabled = true;
     }
     
-    // Close audio context
-    if (state.audioContext) {
-        state.audioContext.close();
-        state.audioContext = null;
+    // Update status banner color
+    const statusCard = elements.statusSection.querySelector('.status-card');
+    if (statusCard) {
+        statusCard.className = 'status-card';
+        if (state.uiState === 'processing') {
+            statusCard.classList.add('status-processing');
+        } else if (state.uiState === 'success') {
+            statusCard.classList.add('status-success');
+        } else if (state.uiState === 'failed') {
+            statusCard.classList.add('status-failed');
+        }
     }
+}
+
+function hideProcessingStatus() {
+    elements.statusSection.style.display = 'none';
+}
+
+function displayResults(result) {
+    // Show results section
+    elements.resultsSection.style.display = 'block';
+    
+    // Hide error message initially
+    elements.errorMessage.style.display = 'none';
+    
+    // Determine success/failure
+    const success = result.success === true;
+    const checks = result.checks || {};
+    
+    // Update badge
+    if (success) {
+        elements.resultBadge.className = 'result-badge success';
+        elements.badgeIcon.textContent = '✓';
+        elements.badgeText.textContent = 'VERIFIED';
+    } else {
+        elements.resultBadge.className = 'result-badge failure';
+        elements.badgeIcon.textContent = '✗';
+        elements.badgeText.textContent = 'VERIFICATION FAILED';
+        // Show error message if present
+        if (result.message) {
+            elements.errorMessage.textContent = result.message;
+            elements.errorMessage.style.display = 'block';
+        }
+    }
+    
+    // Update age
+    const estimatedAge = safeNumber(result.estimated_age);
+    if (estimatedAge !== null) {
+        elements.ageNumber.textContent = Math.round(estimatedAge);
+    } else {
+        elements.ageNumber.textContent = '--';
+    }
+    
+    // Update adult status
+    const isAdult = result.is_adult === true;
+    if (isAdult) {
+        elements.adultStatus.className = 'adult-status verified';
+        elements.adultIcon.textContent = '✓';
+        elements.adultText.textContent = 'Age 18+ Verified';
+    } else {
+        elements.adultStatus.className = 'adult-status not-verified';
+        elements.adultIcon.textContent = '✗';
+        elements.adultText.textContent = 'Under 18';
+    }
+    
+    // Update confidence
+    const confidence = safeNumber(result.confidence) || 0;
+    const confidencePercent = Math.round(confidence * 100);
+    elements.confidenceBar.style.width = `${confidencePercent}%`;
+    elements.confidenceValue.textContent = `${confidencePercent}%`;
+    
+    // Update face liveness
+    const faceLiveness = safeNumber(checks.face_liveness) || 0;
+    const faceLivenessPercent = Math.round(faceLiveness * 100);
+    elements.faceLivenessBar.style.width = `${faceLivenessPercent}%`;
+    elements.faceLivenessValue.textContent = `${faceLivenessPercent}%`;
+    
+    // Update voice liveness
+    const voiceLiveness = safeNumber(checks.voice_liveness) || 0;
+    const voiceLivenessPercent = Math.round(voiceLiveness * 100);
+    elements.voiceLivenessBar.style.width = `${voiceLivenessPercent}%`;
+    elements.voiceLivenessValue.textContent = `${voiceLivenessPercent}%`;
+    
+    // Update lip sync
+    const lipSync = safeNumber(checks.lip_sync) || 0;
+    const lipSyncPercent = Math.round(lipSync * 100);
+    elements.lipSyncBar.style.width = `${lipSyncPercent}%`;
+    elements.lipSyncValue.textContent = `${lipSyncPercent}%`;
+    
+    // Show error message if present
+    if (result.message && !success) {
+        elements.errorMessage.textContent = result.message;
+        elements.errorMessage.style.display = 'block';
+    }
+}
+
+function showError(message) {
+    elements.errorMessage.textContent = message;
+    elements.errorMessage.style.display = 'block';
+    elements.resultsSection.style.display = 'block';
+    
+    // Set failure state
+    elements.resultBadge.className = 'result-badge failure';
+    elements.badgeIcon.textContent = '✗';
+    elements.badgeText.textContent = 'ERROR';
 }
 
 function restart() {
-    cleanup();
-    
     // Reset state
-    state.currentStep = 1;
-    state.captchaId = null;
-    state.captchaText = null;
-    state.captchaExpiry = null;
+    state.videoChunks = [];
+    state.audioSamples = [];
     state.isRecording = false;
-    state.recordedFrames = [];
-    state.audioChunks = [];
+    state.uiState = 'idle';
+    
+    if (state.recordingTimer) {
+        clearInterval(state.recordingTimer);
+        state.recordingTimer = null;
+    }
+    
+    // Stop any active recorders
+    if (state.videoRecorder && state.videoRecorder.state !== 'inactive') {
+        state.videoRecorder.stop();
+    }
+    
+    // Stop audio processing
+    if (state.audioProcessor) {
+        state.audioProcessor.disconnect();
+    }
+    if (state.audioSource) {
+        state.audioSource.disconnect();
+    }
+    if (state.audioContext && state.audioContext.state !== 'closed') {
+        state.audioContext.close();
+    }
+    
+    // Clear captcha
+    clearCaptcha();
     
     // Reset UI
-    elements.recordingTimer.textContent = '00:00';
-    elements.btnRecord.classList.remove('recording');
-    elements.btnRecord.querySelector('.record-text').textContent = 'Start Recording';
+    hideProcessingStatus();
+    elements.resultsSection.style.display = 'none';
+    elements.errorMessage.style.display = 'none';
+    updateVideoStatus('Camera Ready', 'ready');
+    updateUIState();
     
-    goToStep(1);
+    elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+    
+    // Reset video preview if needed
+    if (state.mediaStream && elements.videoPreview.srcObject !== state.mediaStream) {
+        elements.videoPreview.srcObject = state.mediaStream;
+    }
 }
 
 // =====================
-// Utilities
+// Utility Functions
 // =====================
 
-function capitalizeFirst(str) {
-    return str ? str.charAt(0).toUpperCase() + str.slice(1) : '';
+function safeNumber(value) {
+    if (value === null || value === undefined || isNaN(value) || !isFinite(value)) {
+        return null;
+    }
+    return parseFloat(value);
 }
+
+// =====================
+// Cleanup
+// =====================
+
+window.addEventListener('beforeunload', () => {
+    // Stop all tracks
+    if (state.videoStream) {
+        state.videoStream.getTracks().forEach(track => track.stop());
+    }
+    if (state.audioStream) {
+        state.audioStream.getTracks().forEach(track => track.stop());
+    }
+    if (state.mediaStream) {
+        state.mediaStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Stop recorders
+    if (state.videoRecorder && state.videoRecorder.state !== 'inactive') {
+        state.videoRecorder.stop();
+    }
+    
+    // Stop audio processing
+    if (state.audioProcessor) {
+        state.audioProcessor.disconnect();
+    }
+    if (state.audioSource) {
+        state.audioSource.disconnect();
+    }
+    if (state.audioContext && state.audioContext.state !== 'closed') {
+        state.audioContext.close();
+    }
+    
+    // Clear timers
+    if (state.recordingTimer) {
+        clearInterval(state.recordingTimer);
+    }
+    if (state.captchaTimer) {
+        clearInterval(state.captchaTimer);
+    }
+});
 

@@ -2,13 +2,17 @@
 API Routes for Age Authentication System
 """
 import io
+import os
 import base64
+import json
+import time
 import numpy as np
 import cv2
+import uuid
 from typing import Optional, List
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request, Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from loguru import logger
@@ -19,6 +23,14 @@ sys.path.append(str(Path(__file__).parent.parent.parent))
 
 
 router = APIRouter()
+
+# =====================
+# In-Memory Captcha Storage
+# =====================
+
+# Simple in-memory storage for captcha sessions
+# Format: {captcha_id: {'sentence': str, 'created_at': float}}
+captcha_storage = {}
 
 
 # =====================
@@ -79,249 +91,291 @@ class SingleAudioRequest(BaseModel):
     audio_data: str  # Base64 encoded audio
 
 
+class ProcessInitRequest(BaseModel):
+    complexity: str = "medium"
+
+
+class ProcessInitResponse(BaseModel):
+    session_id: str
+    captcha_id: str
+    captcha_sentence: str
+    expires_in: int
+    status: str
+
+
+class BlinkAnalysis(BaseModel):
+    blinks_detected: int
+    blink_rate: float
+    blink_pattern_valid: bool
+
+
+class LipSyncAnalysis(BaseModel):
+    sync_score: float
+    temporal_alignment: float
+    phoneme_match: float
+
+
+class FaceDetectionDetails(BaseModel):
+    frames_analyzed: int
+    faces_detected: int
+    face_quality_score: float
+
+
+class VoiceAnalysisDetails(BaseModel):
+    audio_duration: float
+    speech_detected: bool
+    voice_quality_score: float
+
+
+class AnalysisDetails(BaseModel):
+    face_detection: FaceDetectionDetails
+    voice_analysis: VoiceAnalysisDetails
+    blink_analysis: BlinkAnalysis
+    lip_sync_analysis: LipSyncAnalysis
+
+
+class EnhancedLivenessResult(BaseModel):
+    is_live: bool
+    face_liveness_score: float
+    voice_liveness_score: float
+    lip_sync_score: float
+    blink_detected: bool
+    blink_count: int
+    head_movement_detected: bool
+    motion_score: float
+    captcha_verified: bool
+    captcha_match_score: float
+    reasons: List[str]
+
+
+class ProcessResponse(BaseModel):
+    success: bool
+    session_id: str
+    verification_id: str
+    timestamp: str
+    liveness: EnhancedLivenessResult
+    age: AgeResult
+    analysis_details: AnalysisDetails
+    overall_confidence: float
+    message: str
+
+
 # =====================
 # API Endpoints
 # =====================
 
-@router.get("/captcha", response_model=CaptchaResponse)
-async def get_captcha(request: Request, complexity: str = "medium"):
-    """
-    Generate a new captcha for voice liveness verification
-    
-    Args:
-        complexity: 'simple', 'medium', or 'complex'
-    
-    Returns:
-        Captcha sentence and ID
-    """
-    auth_service = request.app.state.auth_service
-    captcha = auth_service.generate_captcha(complexity)
-    
-    logger.info(f"Generated captcha: {captcha['captcha_id'][:8]}...")
-    
-    return CaptchaResponse(**captcha)
-
-
-@router.post("/verify", response_model=VerificationResponse)
-async def verify_age(
+@router.post("/process")
+async def process_authentication(
     request: Request,
-    captcha_id: str = Form(...),
-    video: UploadFile = File(None),
-    audio: UploadFile = File(None),
-    video_frames: str = Form(None),  # Base64 encoded frames
-    audio_data: str = Form(None)  # Base64 encoded audio
+    action: str = Form(...),
+    video_file: UploadFile = File(None),
+    audio_file: UploadFile = File(None),
+    captcha_id: str = Form(None),
+    sample_rate: int = Form(16000),
+    duration: float = Form(None)
 ):
     """
-    Complete age verification with liveness detection
-    
-    Accepts either:
-    - File uploads (video, audio)
-    - Base64 encoded data (video_frames, audio_data)
-    
-    Returns:
-        Complete verification results including age estimation and liveness
+    Age authentication process with two actions:
+    - action=start: Generate and return captcha sentence
+    - action=verify: Perform full authentication with video/audio
     """
     auth_service = request.app.state.auth_service
     
     try:
-        # Process video input
-        frames = None
-        if video:
-            video_bytes = await video.read()
-            frames = _decode_video(video_bytes)
-        elif video_frames:
-            frames = _decode_base64_frames(video_frames)
+        # Action: Start - Generate captcha
+        if action == "start":
+            # Generate captcha
+            captcha_data = auth_service.generate_captcha('medium')
+            captcha_id = captcha_data['captcha_id']
+            captcha_sentence = captcha_data['sentence']
+            expires_in = captcha_data['expires_in']
+            
+            # Store in memory
+            captcha_storage[captcha_id] = {
+                'sentence': captcha_sentence,
+                'created_at': time.time()
+            }
+            
+            # Clean up expired captchas (older than 10 minutes)
+            current_time = time.time()
+            expired_ids = [
+                cid for cid, data in captcha_storage.items()
+                if current_time - data['created_at'] > 600
+            ]
+            for cid in expired_ids:
+                del captcha_storage[cid]
+            
+            logger.info(f"Generated captcha: {captcha_id[:8]}...")
+            
+            return {
+                'action': 'start',
+                'captcha_id': captcha_id,
+                'captcha_sentence': captcha_sentence,
+                'expires_in': expires_in,
+                'message': 'Please read the sentence aloud while recording'
+            }
         
-        # Process audio input
-        audio_array = None
-        sample_rate = 16000
-        if audio:
-            audio_bytes = await audio.read()
-            audio_array, sample_rate = _decode_audio(audio_bytes)
-        elif audio_data:
-            audio_array, sample_rate = _decode_base64_audio(audio_data)
+        # Action: Verify - Perform authentication
+        elif action == "verify":
+            # Validate captcha_id
+            if not captcha_id or captcha_id not in captcha_storage:
+                response = {
+                    'success': False,
+                    'estimated_age': None,
+                    'is_adult': False,
+                    'confidence': 0.0,
+                    'checks': {
+                        'face_detected': False,
+                        'face_liveness': 0.0,
+                        'blink_detected': False,
+                        'head_movement': False,
+                        'captcha_verified': False,
+                        'voice_liveness': 0.0,
+                        'lip_sync': 0.0
+                    },
+                    'message': 'Invalid or expired captcha. Please start a new verification.'
+                }
+                return auth_service._sanitize(response)
+            
+            # Get expected captcha text
+            expected_text = captcha_storage[captcha_id]['sentence']
+            
+            # Decode video
+            frames = []
+            if video_file:
+                video_bytes = await video_file.read()
+                frames = _decode_video(video_bytes)
+            
+            # Decode audio
+            audio_array = None
+            if audio_file:
+                try:
+                    audio_bytes = await audio_file.read()
+                    if len(audio_bytes) == 0:
+                        logger.warning("Empty audio file received")
+                    else:
+                        audio_array, sr = _decode_audio(audio_bytes)
+                        sample_rate = sr
+                        
+                        # Fail fast: Check audio validity
+                        if audio_array is None or len(audio_array) == 0:
+                            logger.warning("Audio decoding resulted in empty array")
+                        elif len(audio_array) < sample_rate:  # Less than 1 second
+                            logger.warning(f"Audio too short: {len(audio_array)} samples < {sample_rate}")
+                            response = {
+                                'success': False,
+                                'estimated_age': None,
+                                'is_adult': False,
+                                'confidence': 0.0,
+                                'checks': {
+                                    'face_detected': False,
+                                    'face_liveness': 0.0,
+                                    'blink_detected': False,
+                                    'head_movement': False,
+                                    'captcha_verified': False,
+                                    'voice_liveness': 0.0,
+                                    'lip_sync': 0.0
+                                },
+                                'message': 'Audio not detected. Please speak clearly for at least 5 seconds.'
+                            }
+                            return auth_service._sanitize(response)
+                except Exception as e:
+                    logger.error(f"Audio decoding failed: {e}")
+                    response = {
+                        'success': False,
+                        'estimated_age': None,
+                        'is_adult': False,
+                        'confidence': 0.0,
+                        'checks': {
+                            'face_detected': False,
+                            'face_liveness': 0.0,
+                            'blink_detected': False,
+                            'head_movement': False,
+                            'captcha_verified': False,
+                            'voice_liveness': 0.0,
+                            'lip_sync': 0.0
+                        },
+                        'message': f'Audio decoding failed: {str(e)}. Please ensure microphone is working.'
+                    }
+                    return auth_service._sanitize(response)
+            
+            # Validate inputs
+            if len(frames) == 0 and audio_array is None:
+                response = {
+                    'success': False,
+                    'estimated_age': None,
+                    'is_adult': False,
+                    'confidence': 0.0,
+                    'checks': {
+                        'face_detected': False,
+                        'face_liveness': 0.0,
+                        'blink_detected': False,
+                        'head_movement': False,
+                        'captcha_verified': False,
+                        'voice_liveness': 0.0,
+                        'lip_sync': 0.0
+                    },
+                    'message': 'No video or audio data provided'
+                }
+                return auth_service._sanitize(response)
+            
+            # Perform authentication with captcha
+            result = auth_service.process_authentication(
+                frames=frames,
+                audio=audio_array if audio_array is not None else np.array([]),
+                sample_rate=sample_rate,
+                duration=duration,
+                expected_captcha_text=expected_text,
+                captcha_id=captcha_id
+            )
+            
+            # Clean up used captcha
+            if captcha_id in captcha_storage:
+                del captcha_storage[captcha_id]
+            
+            logger.info(f"Authentication completed: success={result['success']}")
+            
+            return result
         
-        if frames is None and audio_array is None:
-            raise HTTPException(status_code=400, detail="No video or audio data provided")
-        
-        # Perform verification
-        result = auth_service.verify(
-            captcha_id=captcha_id,
-            frames=frames,
-            audio=audio_array,
-            sample_rate=sample_rate
-        )
-        
-        logger.info(f"Verification completed: {result['verification_id'][:8]}...")
-        
-        return VerificationResponse(**result)
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Verification error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error during verification")
-
-
-@router.post("/predict/face")
-async def predict_face_age(
-    request: Request,
-    image: UploadFile = File(None),
-    image_data: str = Form(None)
-):
-    """
-    Predict age from a single face image
-    
-    Args:
-        image: Uploaded image file
-        image_data: Base64 encoded image
-    
-    Returns:
-        Age prediction results
-    """
-    auth_service = request.app.state.auth_service
-    
-    try:
-        # Decode image
-        if image:
-            image_bytes = await image.read()
-            img_array = _decode_image(image_bytes)
-        elif image_data:
-            img_array = _decode_base64_image(image_data)
         else:
-            raise HTTPException(status_code=400, detail="No image provided")
-        
-        # Predict
-        result = auth_service.predict_face_age(img_array)
-        
-        return result
+            response = {
+                'success': False,
+                'estimated_age': None,
+                'is_adult': False,
+                'confidence': 0.0,
+                'checks': {
+                    'face_detected': False,
+                    'face_liveness': 0.0,
+                    'blink_detected': False,
+                    'head_movement': False,
+                    'captcha_verified': False,
+                    'voice_liveness': 0.0,
+                    'lip_sync': 0.0
+                },
+                'message': f'Invalid action: {action}. Use "start" or "verify".'
+            }
+            return auth_service._sanitize(response)
     
     except Exception as e:
-        logger.error(f"Face prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/predict/voice")
-async def predict_voice_age(
-    request: Request,
-    audio: UploadFile = File(None),
-    audio_data: str = Form(None)
-):
-    """
-    Predict age from audio
-    
-    Args:
-        audio: Uploaded audio file
-        audio_data: Base64 encoded audio
-    
-    Returns:
-        Age prediction results
-    """
-    auth_service = request.app.state.auth_service
-    
-    try:
-        # Decode audio
-        if audio:
-            audio_bytes = await audio.read()
-            audio_array, sample_rate = _decode_audio(audio_bytes)
-        elif audio_data:
-            audio_array, sample_rate = _decode_base64_audio(audio_data)
-        else:
-            raise HTTPException(status_code=400, detail="No audio provided")
-        
-        # Predict
-        result = auth_service.predict_voice_age(audio_array, sample_rate)
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Voice prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/liveness/face")
-async def check_face_liveness(
-    request: Request,
-    video: UploadFile = File(None),
-    video_frames: str = Form(None)
-):
-    """
-    Check face liveness from video frames
-    
-    Args:
-        video: Uploaded video file
-        video_frames: Base64 encoded frames
-    
-    Returns:
-        Face liveness detection results
-    """
-    auth_service = request.app.state.auth_service
-    
-    try:
-        # Decode video
-        if video:
-            video_bytes = await video.read()
-            frames = _decode_video(video_bytes)
-        elif video_frames:
-            frames = _decode_base64_frames(video_frames)
-        else:
-            raise HTTPException(status_code=400, detail="No video data provided")
-        
-        # Check liveness
-        result = auth_service.check_face_liveness(frames)
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Face liveness error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/liveness/voice")
-async def check_voice_liveness(
-    request: Request,
-    captcha_id: str = Form(...),
-    audio: UploadFile = File(None),
-    audio_data: str = Form(None)
-):
-    """
-    Check voice liveness via captcha verification
-    
-    Args:
-        captcha_id: The captcha ID to verify against
-        audio: Uploaded audio file
-        audio_data: Base64 encoded audio
-    
-    Returns:
-        Voice liveness/captcha verification results
-    """
-    auth_service = request.app.state.auth_service
-    
-    try:
-        # Decode audio
-        if audio:
-            audio_bytes = await audio.read()
-            audio_array, sample_rate = _decode_audio(audio_bytes)
-        elif audio_data:
-            audio_array, sample_rate = _decode_base64_audio(audio_data)
-        else:
-            raise HTTPException(status_code=400, detail="No audio provided")
-        
-        # Check liveness
-        result = auth_service.check_voice_liveness(captcha_id, audio_array, sample_rate)
-        
-        return result
-    
-    except Exception as e:
-        logger.error(f"Voice liveness error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/models/status")
-async def get_model_status(request: Request):
-    """Get status of loaded models"""
-    auth_service = request.app.state.auth_service
-    return auth_service.get_model_status()
+        logger.error(f"Process authentication error: {e}")
+        # Always return HTTP 200 with failure response
+        response = {
+            'success': False,
+            'estimated_age': None,
+            'is_adult': False,
+            'confidence': 0.0,
+            'checks': {
+                'face_detected': False,
+                'face_liveness': 0.0,
+                'blink_detected': False,
+                'head_movement': False,
+                'captcha_verified': False,
+                'voice_liveness': 0.0,
+                'lip_sync': 0.0
+            },
+            'message': f'Verification failed: {str(e)}'
+        }
+        return auth_service._sanitize(response)
 
 
 # =====================
@@ -382,41 +436,87 @@ def _decode_base64_frames(data: str) -> List[np.ndarray]:
     
     try:
         frame_list = json.loads(data)
-        frames = [_decode_base64_image(f) for f in frame_list]
+        frames = []
+        for f in frame_list:
+            # Handle data URL format (data:image/jpeg;base64,...)
+            if isinstance(f, str) and 'base64,' in f:
+                f = f.split('base64,')[1]
+            frames.append(_decode_base64_image(f))
         return frames
     except json.JSONDecodeError:
-        # Single frame
+        # Single frame - handle data URL format
+        if isinstance(data, str) and 'base64,' in data:
+            data = data.split('base64,')[1]
         return [_decode_base64_image(data)]
+    except Exception as e:
+        logger.error(f"Error decoding frames: {e}")
+        raise ValueError(f"Failed to decode video frames: {str(e)}")
 
 
 def _decode_audio(audio_bytes: bytes) -> tuple:
-    """Decode audio bytes to numpy array"""
-    import soundfile as sf
+    """Decode audio bytes to numpy array - supports WAV, FLAC, WebM, MP3"""
+    import librosa
+    import tempfile
     
-    audio_io = io.BytesIO(audio_bytes)
+    # Check if it's a format that soundfile can handle (WAV, FLAC)
+    is_wav_or_flac = (
+        audio_bytes[:4] == b'RIFF' or  # WAV
+        audio_bytes[:4] == b'fLaC' or  # FLAC
+        audio_bytes[:4] == b'FORM'     # AIFF
+    )
     
-    try:
-        audio, sample_rate = sf.read(audio_io)
-    except Exception:
-        # Try with librosa for more formats
-        import librosa
-        audio_io.seek(0)
-        
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as f:
-            f.write(audio_bytes)
-            temp_path = f.name
-        
+    if is_wav_or_flac:
+        # Try soundfile first for WAV/FLAC (faster)
         try:
-            audio, sample_rate = librosa.load(temp_path, sr=16000)
-        finally:
-            os.unlink(temp_path)
+            import soundfile as sf
+            audio_io = io.BytesIO(audio_bytes)
+            audio, sample_rate = sf.read(audio_io)
+            # Ensure mono
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
+            return audio, sample_rate
+        except Exception as e:
+            logger.debug(f"soundfile failed, trying librosa: {e}")
     
-    # Ensure mono
-    if len(audio.shape) > 1:
-        audio = audio.mean(axis=1)
+    # Use librosa for WebM, MP3, and other formats
+    # Determine file extension based on content
+    suffix = '.webm'
+    if audio_bytes[:4] == b'RIFF':
+        suffix = '.wav'
+    elif audio_bytes[:3] == b'ID3' or audio_bytes[:2] == b'\xff\xfb':
+        suffix = '.mp3'
+    elif audio_bytes[:4] == b'fLaC':
+        suffix = '.flac'
     
-    return audio, sample_rate
+    # Write to temp file for librosa (using context manager for better cleanup)
+    temp_fd = None
+    temp_path = None
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(temp_fd, 'wb') as f:
+            f.write(audio_bytes)
+        temp_fd = None  # File handle closed by context manager
+        
+        # Load with librosa (handles WebM, MP3, WAV, etc.)
+        audio, sample_rate = librosa.load(temp_path, sr=16000, mono=True)
+        
+        return audio, sample_rate
+    except Exception as e:
+        logger.error(f"Failed to decode audio: {e}")
+        raise ValueError(f"Unsupported audio format or corrupted file: {str(e)}")
+    finally:
+        # Ensure cleanup even on errors
+        if temp_fd is not None:
+            try:
+                os.close(temp_fd)
+            except Exception:
+                pass
+        if temp_path is not None:
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file {temp_path}: {e}")
 
 
 def _decode_base64_audio(data: str) -> tuple:

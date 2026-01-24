@@ -3,294 +3,145 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Age Authentication System</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <title>Multimodal Age Authentication</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="app-container">
-        <!-- Animated Background -->
-        <div class="bg-gradient"></div>
-        <div class="bg-grid"></div>
-        
-        <!-- Header -->
-        <header class="header">
-            <div class="logo">
-                <div class="logo-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-                        <circle cx="12" cy="10" r="3"/>
-                        <path d="M6.5 18.5c1.5-2.5 3.5-3.5 5.5-3.5s4 1 5.5 3.5"/>
-                    </svg>
-                </div>
-                <span class="logo-text">AgeAuth</span>
-            </div>
-            <nav class="nav">
-                <a href="#" class="nav-link active">Verify</a>
-                <a href="#" class="nav-link">API Docs</a>
-                <a href="#" class="nav-link">About</a>
-            </nav>
+    <div class="container">
+        <header>
+            <h1>Multimodal Age Authentication</h1>
+            <p class="subtitle">Face + Voice Verification System</p>
         </header>
 
-        <!-- Main Content -->
-        <main class="main-content">
-            <!-- Step Indicator -->
-            <div class="steps-indicator">
-                <div class="step active" data-step="1">
-                    <div class="step-number">1</div>
-                    <span class="step-label">Get Captcha</span>
-                </div>
-                <div class="step-connector"></div>
-                <div class="step" data-step="2">
-                    <div class="step-number">2</div>
-                    <span class="step-label">Record</span>
-                </div>
-                <div class="step-connector"></div>
-                <div class="step" data-step="3">
-                    <div class="step-number">3</div>
-                    <span class="step-label">Verify</span>
-                </div>
-                <div class="step-connector"></div>
-                <div class="step" data-step="4">
-                    <div class="step-number">4</div>
-                    <span class="step-label">Result</span>
+        <main>
+            <!-- Video Preview Section -->
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="videoPreview" autoplay muted playsinline></video>
+                    <div class="video-overlay" id="videoOverlay">
+                        <div class="face-guide"></div>
+                    </div>
+                    <div class="video-status" id="videoStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Camera Ready</span>
+                    </div>
                 </div>
             </div>
 
-            <!-- Main Card -->
-            <div class="verification-card">
-                <!-- Step 1: Captcha -->
-                <section class="step-section active" id="step-captcha">
-                    <h2 class="section-title">
-                        <span class="title-icon">🔐</span>
-                        Age Verification
-                    </h2>
-                    <p class="section-desc">
-                        Click the button below to generate a verification phrase.
-                        You'll need to read this phrase aloud while showing your face to the camera.
-                    </p>
-                    <button class="btn btn-primary btn-lg" id="btn-get-captcha">
-                        <span class="btn-icon">⚡</span>
-                        Generate Verification Phrase
-                    </button>
-                </section>
+            <!-- Captcha Display -->
+            <div class="captcha-section" id="captchaSection" style="display: none;">
+                <div class="captcha-card">
+                    <div class="captcha-label">Please read aloud:</div>
+                    <div class="captcha-text" id="captchaText"></div>
+                    <div class="captcha-timer" id="captchaTimer" style="display: none;"></div>
+                </div>
+            </div>
 
-                <!-- Step 2: Recording -->
-                <section class="step-section" id="step-recording">
-                    <h2 class="section-title">
-                        <span class="title-icon">🎤</span>
-                        Read Aloud
-                    </h2>
-                    
-                    <!-- Captcha Display -->
-                    <div class="captcha-display" id="captcha-display">
-                        <div class="captcha-label">Read this phrase clearly:</div>
-                        <div class="captcha-text" id="captcha-text"></div>
-                        <div class="captcha-timer">
-                            <span class="timer-icon">⏱️</span>
-                            Expires in: <span id="captcha-timer">5:00</span>
+            <!-- Instructions -->
+            <div class="instructions">
+                <div class="instruction-item">
+                    <span class="icon">👤</span>
+                    <span>Keep your face clearly visible</span>
+                </div>
+                <div class="instruction-item">
+                    <span class="icon">🗣️</span>
+                    <span>Speak clearly and naturally</span>
+                </div>
+                <div class="instruction-item">
+                    <span class="icon">💡</span>
+                    <span>Ensure good lighting</span>
+                </div>
+            </div>
+
+            <!-- Control Buttons -->
+            <div class="controls">
+                <button id="btnStart" class="btn btn-primary">
+                    <span class="btn-icon">▶</span>
+                    Start Verification
+                </button>
+                <button id="btnStop" class="btn btn-secondary" disabled>
+                    <span class="btn-icon">⏹</span>
+                    Stop & Verify
+                </button>
+            </div>
+
+            <!-- Status Display -->
+            <div class="status-section" id="statusSection" style="display: none;">
+                <div class="status-card">
+                    <div class="status-icon" id="statusIcon">⏳</div>
+                    <div class="status-text" id="statusText">Processing...</div>
+                </div>
+            </div>
+
+            <!-- Results Section -->
+            <div class="results-section" id="resultsSection" style="display: none;">
+                <div class="result-card" id="resultCard">
+                    <!-- Success/Failure Badge -->
+                    <div class="result-badge" id="resultBadge">
+                        <span class="badge-icon" id="badgeIcon">✓</span>
+                        <span class="badge-text" id="badgeText">VERIFIED</span>
+                    </div>
+
+                    <!-- Age Display -->
+                    <div class="age-display">
+                        <div class="age-number" id="ageNumber">--</div>
+                        <div class="age-label">Estimated Age</div>
+                    </div>
+
+                    <!-- Adult Status -->
+                    <div class="adult-status" id="adultStatus">
+                        <span class="adult-icon" id="adultIcon">✓</span>
+                        <span class="adult-text" id="adultText">Age 18+ Verified</span>
+                    </div>
+
+                    <!-- Metrics -->
+                    <div class="metrics">
+                        <div class="metric-item">
+                            <span class="metric-label">Overall Confidence</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill" id="confidenceBar" style="width: 0%"></div>
+                            </div>
+                            <span class="metric-value" id="confidenceValue">0%</span>
+                        </div>
+
+                        <div class="metric-item">
+                            <span class="metric-label">Face Liveness</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill" id="faceLivenessBar" style="width: 0%"></div>
+                            </div>
+                            <span class="metric-value" id="faceLivenessValue">0%</span>
+                        </div>
+
+                        <div class="metric-item">
+                            <span class="metric-label">Voice Liveness</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill" id="voiceLivenessBar" style="width: 0%"></div>
+                            </div>
+                            <span class="metric-value" id="voiceLivenessValue">0%</span>
+                        </div>
+
+                        <div class="metric-item">
+                            <span class="metric-label">Lip Sync</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill" id="lipSyncBar" style="width: 0%"></div>
+                            </div>
+                            <span class="metric-value" id="lipSyncValue">0%</span>
                         </div>
                     </div>
 
-                    <!-- Video/Audio Preview -->
-                    <div class="media-preview">
-                        <div class="video-container">
-                            <video id="video-preview" autoplay muted playsinline></video>
-                            <div class="video-overlay" id="video-overlay">
-                                <div class="face-guide"></div>
-                            </div>
-                            <div class="video-status" id="video-status">
-                                <span class="status-dot"></span>
-                                <span class="status-text">Camera Ready</span>
-                            </div>
-                        </div>
-                        
-                        <div class="audio-visualizer" id="audio-visualizer">
-                            <canvas id="audio-canvas"></canvas>
-                            <div class="audio-level">
-                                <div class="audio-level-bar" id="audio-level-bar"></div>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Error Message -->
+                    <div class="error-message" id="errorMessage" style="display: none;"></div>
+                </div>
 
-                    <!-- Recording Controls -->
-                    <div class="recording-controls">
-                        <button class="btn btn-record" id="btn-record">
-                            <span class="record-icon"></span>
-                            <span class="record-text">Start Recording</span>
-                        </button>
-                        <div class="recording-timer" id="recording-timer">00:00</div>
-                    </div>
-
-                    <div class="instructions">
-                        <div class="instruction-item">
-                            <span class="instruction-icon">👤</span>
-                            Keep your face clearly visible
-                        </div>
-                        <div class="instruction-item">
-                            <span class="instruction-icon">🗣️</span>
-                            Speak clearly and naturally
-                        </div>
-                        <div class="instruction-item">
-                            <span class="instruction-icon">💡</span>
-                            Ensure good lighting
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Step 3: Processing -->
-                <section class="step-section" id="step-processing">
-                    <h2 class="section-title">
-                        <span class="title-icon">⚙️</span>
-                        Analyzing...
-                    </h2>
-                    <div class="processing-animation">
-                        <div class="processing-ring"></div>
-                        <div class="processing-ring ring-2"></div>
-                        <div class="processing-ring ring-3"></div>
-                        <div class="processing-icon">🔍</div>
-                    </div>
-                    <div class="processing-steps">
-                        <div class="processing-step" id="proc-face">
-                            <span class="proc-icon">⏳</span>
-                            <span class="proc-text">Analyzing face...</span>
-                        </div>
-                        <div class="processing-step" id="proc-voice">
-                            <span class="proc-icon">⏳</span>
-                            <span class="proc-text">Processing voice...</span>
-                        </div>
-                        <div class="processing-step" id="proc-liveness">
-                            <span class="proc-icon">⏳</span>
-                            <span class="proc-text">Checking liveness...</span>
-                        </div>
-                        <div class="processing-step" id="proc-age">
-                            <span class="proc-icon">⏳</span>
-                            <span class="proc-text">Estimating age...</span>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- Step 4: Results -->
-                <section class="step-section" id="step-results">
-                    <h2 class="section-title">
-                        <span class="title-icon" id="result-icon">✅</span>
-                        <span id="result-title">Verification Complete</span>
-                    </h2>
-                    
-                    <div class="results-container">
-                        <!-- Main Result -->
-                        <div class="result-main" id="result-main">
-                            <div class="result-badge verified" id="result-badge">
-                                <span class="badge-icon">✓</span>
-                                <span class="badge-text">VERIFIED</span>
-                            </div>
-                            <div class="age-display">
-                                <div class="age-number" id="age-number">--</div>
-                                <div class="age-label">Estimated Age</div>
-                            </div>
-                            <div class="age-group" id="age-group">
-                                <span class="group-badge adult">Adult</span>
-                            </div>
-                        </div>
-
-                        <!-- Detailed Results -->
-                        <div class="result-details">
-                            <div class="result-card">
-                                <div class="result-card-header">
-                                    <span class="card-icon">👤</span>
-                                    Face Analysis
-                                </div>
-                                <div class="result-card-body">
-                                    <div class="metric">
-                                        <span class="metric-label">Face Age</span>
-                                        <span class="metric-value" id="face-age">--</span>
-                                    </div>
-                                    <div class="metric">
-                                        <span class="metric-label">Liveness</span>
-                                        <div class="progress-bar">
-                                            <div class="progress-fill" id="face-liveness-bar" style="width: 0%"></div>
-                                        </div>
-                                        <span class="metric-value" id="face-liveness">0%</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="result-card">
-                                <div class="result-card-header">
-                                    <span class="card-icon">🎤</span>
-                                    Voice Analysis
-                                </div>
-                                <div class="result-card-body">
-                                    <div class="metric">
-                                        <span class="metric-label">Voice Age</span>
-                                        <span class="metric-value" id="voice-age">--</span>
-                                    </div>
-                                    <div class="metric">
-                                        <span class="metric-label">Captcha Match</span>
-                                        <div class="progress-bar">
-                                            <div class="progress-fill" id="voice-liveness-bar" style="width: 0%"></div>
-                                        </div>
-                                        <span class="metric-value" id="voice-liveness">0%</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="result-card">
-                                <div class="result-card-header">
-                                    <span class="card-icon">🔗</span>
-                                    Lip Sync
-                                </div>
-                                <div class="result-card-body">
-                                    <div class="metric">
-                                        <span class="metric-label">Sync Score</span>
-                                        <div class="progress-bar">
-                                            <div class="progress-fill" id="lip-sync-bar" style="width: 0%"></div>
-                                        </div>
-                                        <span class="metric-value" id="lip-sync">0%</span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="result-card full-width">
-                                <div class="result-card-header">
-                                    <span class="card-icon">📊</span>
-                                    Overall Confidence
-                                </div>
-                                <div class="result-card-body">
-                                    <div class="confidence-meter">
-                                        <div class="confidence-fill" id="confidence-fill" style="width: 0%"></div>
-                                        <span class="confidence-text" id="confidence-text">0%</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Adult Check -->
-                        <div class="adult-check" id="adult-check">
-                            <div class="adult-status verified" id="adult-status">
-                                <span class="status-icon">✓</span>
-                                <span class="status-text">Age 18+ Verified</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <button class="btn btn-primary" id="btn-restart">
-                        <span class="btn-icon">🔄</span>
-                        Start New Verification
-                    </button>
-                </section>
+                <!-- Restart Button -->
+                <button id="btnRestart" class="btn btn-primary">
+                    <span class="btn-icon">🔄</span>
+                    Start New Verification
+                </button>
             </div>
         </main>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <p>Multimodal Age Authentication System • Face + Voice • Powered by Deep Learning</p>
-        </footer>
     </div>
 
     <script src="app.js"></script>
 </body>
 </html>
-

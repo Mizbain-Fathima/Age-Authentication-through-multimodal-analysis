@@ -8,6 +8,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.parent.absolute()
 IMAGE_DATA_DIR = BASE_DIR / "image-data" / "UTKFace"
 AUDIO_DATA_DIR = BASE_DIR / "audio-data"
+KIDS_AUDIO_DATA_DIR = BASE_DIR / "kids-audio-data" / "output"
 MODELS_DIR = BASE_DIR / "models"
 LOGS_DIR = BASE_DIR / "logs"
 
@@ -78,6 +79,11 @@ AUDIO_AGE_MAP = {
     'eighties': 84,   # 80-89, center at 84
     'nineties': 92    # > 89, approximate at 92
 }
+
+# Kids audio dataset age mapping
+# File format: {Gender}{SpeakerID}_{SessionID}_{UtteranceID}.wav
+# Assuming children ages 5-12, we estimate based on speaker ID range
+KIDS_AGE_RANGE = (5, 12)  # Min and max age for kids dataset
 
 # Captcha sentences for liveness verification
 CAPTCHA_SENTENCES = [

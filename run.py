@@ -3,11 +3,12 @@
 Age Authentication System - Main Entry Point
 
 Usage:
-    python run.py server          # Start the API server
-    python run.py train face      # Train face age model
-    python run.py train voice     # Train voice age model
-    python run.py train fusion    # Train fusion model
-    python run.py analyze         # Run data analysis
+    python run.py server              # Start the API server
+    python run.py train face          # Train face age model
+    python run.py train voice         # Train voice age model
+    python run.py train voice --resume # Resume voice training from checkpoint
+    python run.py train fusion        # Train fusion model
+    python run.py analyze             # Run data analysis
 """
 import sys
 import argparse
@@ -24,24 +25,36 @@ def run_server():
     run_server()
 
 
-def train_model(model_type):
-    """Train a specific model"""
-    from src.training.trainer import train_face_model, train_voice_model
+def train_model(model_type, resume=False):
+    """Train a specific model
+    
+    Args:
+        model_type: Type of model to train (face, voice, fusion)
+        resume: If True, resume training from the last saved checkpoint
+    """
+    from src.training.trainer import train_face_model, train_voice_model, train_fusion_model
     
     if model_type == 'face':
-        logger.info("Starting face model training...")
-        trainer, history = train_face_model()
+        if resume:
+            logger.info("Resuming face model training from checkpoint...")
+        else:
+            logger.info("Starting face model training...")
+        trainer, history = train_face_model(resume=resume)
         logger.info("Face model training complete!")
         
     elif model_type == 'voice':
-        logger.info("Starting voice model training...")
-        trainer, history = train_voice_model()
+        if resume:
+            logger.info("Resuming voice model training from checkpoint...")
+        else:
+            logger.info("Starting voice model training...")
+        trainer, history = train_voice_model(resume=resume)
         logger.info("Voice model training complete!")
         
     elif model_type == 'fusion':
-        logger.info("Fusion model training requires pre-trained face and voice models")
-        logger.info("Please train face and voice models first")
-        # TODO: Implement fusion training with paired data
+        logger.info("Starting fusion model training...")
+        logger.info("Using pre-trained face and voice encoders if available")
+        trainer, history = train_fusion_model(resume=resume)
+        logger.info("Fusion model training complete!")
         
     else:
         logger.error(f"Unknown model type: {model_type}")
@@ -68,6 +81,8 @@ Examples:
   python run.py server              Start the API server on port 8000
   python run.py train face          Train the face age prediction model
   python run.py train voice         Train the voice age prediction model
+  python run.py train voice --resume Resume voice model training from checkpoint
+  python run.py train fusion        Train the fusion model (requires face+voice models)
   python run.py analyze             Analyze the datasets and show statistics
         """
     )
@@ -84,6 +99,11 @@ Examples:
         choices=['face', 'voice', 'fusion'],
         help='Model type to train'
     )
+    train_parser.add_argument(
+        '--resume', '-r',
+        action='store_true',
+        help='Resume training from the last saved checkpoint'
+    )
     
     # Analyze command
     analyze_parser = subparsers.add_parser('analyze', help='Run data analysis')
@@ -93,7 +113,7 @@ Examples:
     if args.command == 'server':
         run_server()
     elif args.command == 'train':
-        train_model(args.model)
+        train_model(args.model, resume=args.resume)
     elif args.command == 'analyze':
         run_analysis()
     else:

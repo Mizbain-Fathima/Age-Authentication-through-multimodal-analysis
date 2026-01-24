@@ -3,7 +3,7 @@
    Modern Dark Theme with Neon Accents
    ================================ */
 
-   :root {
+:root {
     /* Color Palette - Cyberpunk inspired */
     --bg-primary: #0a0a0f;
     --bg-secondary: #12121a;
@@ -999,4 +999,301 @@ body {
     .result-card.full-width {
         grid-column: span 1;
     }
+}
+
+/* ================================
+   Simplified Container Styles
+   ================================ */
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+    min-height: 100vh;
+}
+
+header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+header h1 {
+    font-size: 2.5rem;
+    font-weight: 700;
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.5rem;
+}
+
+.subtitle {
+    color: var(--text-secondary);
+    font-size: 1.1rem;
+}
+
+.video-section {
+    margin-bottom: 2rem;
+}
+
+.video-container {
+    position: relative;
+    max-width: 640px;
+    margin: 0 auto;
+    aspect-ratio: 4/3;
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: var(--border-subtle);
+}
+
+#videoPreview {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+}
+
+.controls {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    margin-bottom: 2rem;
+}
+
+.btn-secondary {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--text-muted);
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: var(--bg-card);
+    border-color: var(--accent-cyan);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.status-section {
+    text-align: center;
+    margin: 2rem 0;
+}
+
+.status-card {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 2rem;
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    border: var(--border-subtle);
+}
+
+.status-icon {
+    font-size: 3rem;
+}
+
+.results-section {
+    margin-top: 2rem;
+}
+
+.result-card {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    border: var(--border-subtle);
+    padding: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+.result-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius-full);
+    font-weight: 600;
+    margin-bottom: 1.5rem;
+}
+
+.result-badge.success {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--accent-green);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.result-badge.failure {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-red);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.age-display {
+    text-align: center;
+    margin: 2rem 0;
+}
+
+.age-number {
+    font-size: 4rem;
+    font-weight: 700;
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1;
+}
+
+.age-label {
+    color: var(--text-secondary);
+    font-size: 1rem;
+    margin-top: 0.5rem;
+}
+
+.adult-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    margin-bottom: 2rem;
+}
+
+.adult-status.verified {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--accent-green);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.adult-status.not-verified {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--accent-red);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.metrics {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.metric-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.metric-label {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.metric-bar {
+    height: 8px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+    position: relative;
+}
+
+.metric-fill {
+    height: 100%;
+    background: var(--gradient-primary);
+    border-radius: var(--radius-full);
+    transition: width 0.5s ease;
+}
+
+.metric-value {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    font-weight: 600;
+    text-align: right;
+}
+
+.error-message {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: var(--radius-md);
+    color: var(--accent-red);
+    text-align: center;
+}
+
+.status-dot.status-ready {
+    background: var(--accent-green);
+}
+
+.status-dot.status-recording {
+    background: var(--accent-red);
+    animation: blink 1s infinite;
+}
+
+.status-dot.status-processing {
+    background: var(--accent-cyan);
+    animation: blink 1s infinite;
+}
+
+.status-card.status-processing {
+    border-color: var(--accent-cyan);
+    background: rgba(0, 245, 255, 0.1);
+}
+
+.status-card.status-success {
+    border-color: var(--accent-green);
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.status-card.status-failed {
+    border-color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* ================================
+   Captcha Display
+   ================================ */
+
+.captcha-section {
+    margin: 2rem 0;
+}
+
+.captcha-card {
+    background: var(--bg-card);
+    border: 2px solid var(--accent-cyan);
+    border-radius: var(--radius-lg);
+    padding: 2rem;
+    text-align: center;
+    box-shadow: 0 0 30px rgba(0, 245, 255, 0.2);
+}
+
+.captcha-label {
+    font-size: 1.1rem;
+    color: var(--accent-cyan);
+    font-weight: 600;
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.captcha-text {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.6;
+    padding: 1.5rem;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-md);
+    border-left: 4px solid var(--accent-cyan);
+    margin-bottom: 1rem;
+    word-wrap: break-word;
+}
+
+.captcha-timer {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
 }

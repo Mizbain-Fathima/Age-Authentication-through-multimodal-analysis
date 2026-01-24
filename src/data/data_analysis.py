@@ -14,7 +14,10 @@ from loguru import logger
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from src.config import IMAGE_DATA_DIR, AUDIO_DATA_DIR, AUDIO_AGE_MAP, AGE_GROUPS
+from src.config import (
+    IMAGE_DATA_DIR, AUDIO_DATA_DIR, KIDS_AUDIO_DATA_DIR, 
+    AUDIO_AGE_MAP, AGE_GROUPS, KIDS_AGE_RANGE
+)
 
 
 class DataAnalyzer:
@@ -23,8 +26,10 @@ class DataAnalyzer:
     def __init__(self):
         self.image_data_dir = IMAGE_DATA_DIR
         self.audio_data_dir = AUDIO_DATA_DIR
+        self.kids_audio_data_dir = KIDS_AUDIO_DATA_DIR
         self.face_data = None
         self.audio_data = None
+        self.kids_audio_data = None
         
     def analyze_utkface(self):
         """
@@ -135,6 +140,90 @@ class DataAnalyzer:
             self.audio_data = existing_files
             
         return self.audio_data
+    
+    def analyze_kids_audio(self):
+        """
+        Analyze Kids Audio dataset
+        File format: {Gender}{SpeakerID}_{SessionID}_{UtteranceID}.wav
+        Example: F10_01_01.wav = Female speaker 10, session 01, utterance 01
+        """
+        logger.info("Analyzing Kids Audio dataset...")
+        
+        if not self.kids_audio_data_dir.exists():
+            logger.warning(f"Kids audio directory not found: {self.kids_audio_data_dir}")
+            return pd.DataFrame()
+        
+        audio_files = list(self.kids_audio_data_dir.glob("*.wav"))
+        logger.info(f"Found {len(audio_files)} kids audio files")
+        
+        data = []
+        parse_errors = 0
+        
+        # Extract unique speakers
+        speakers = {}
+        for audio_path in audio_files:
+            filename = audio_path.name
+            # Parse: {Gender}{SpeakerID}_{SessionID}_{UtteranceID}.wav
+            parts = filename.replace('.wav', '').split('_')
+            if len(parts) >= 3:
+                speaker_code = parts[0]  # e.g., "F10" or "M25"
+                if speaker_code not in speakers:
+                    speakers[speaker_code] = {
+                        'gender': 'female' if speaker_code[0] == 'F' else 'male',
+                        'speaker_id': speaker_code
+                    }
+        
+        # Assign ages to speakers (uniformly distributed across KIDS_AGE_RANGE)
+        unique_speakers = sorted(speakers.keys())
+        num_speakers = len(unique_speakers)
+        age_range = KIDS_AGE_RANGE[1] - KIDS_AGE_RANGE[0] + 1
+        
+        for i, speaker in enumerate(unique_speakers):
+            # Distribute ages evenly across speakers
+            age = KIDS_AGE_RANGE[0] + (i * age_range // num_speakers)
+            speakers[speaker]['age'] = min(age, KIDS_AGE_RANGE[1])
+        
+        logger.info(f"Identified {num_speakers} unique kid speakers")
+        
+        # Build dataset
+        for audio_path in audio_files:
+            filename = audio_path.name
+            parts = filename.replace('.wav', '').split('_')
+            
+            if len(parts) >= 3:
+                try:
+                    speaker_code = parts[0]
+                    speaker_info = speakers.get(speaker_code, {})
+                    age = speaker_info.get('age', 8)  # default to 8 if not found
+                    
+                    data.append({
+                        'filepath': str(audio_path),
+                        'filename': filename,
+                        'numeric_age': age,
+                        'age': 'child',  # category
+                        'gender': speaker_info.get('gender', 'unknown'),
+                        'speaker_id': speaker_code,
+                        'age_group': 'child',
+                        'is_adult': False,
+                        'text': '',  # No transcript for kids data
+                        'source': 'kids_audio'
+                    })
+                except (ValueError, IndexError):
+                    parse_errors += 1
+            else:
+                parse_errors += 1
+        
+        self.kids_audio_data = pd.DataFrame(data)
+        
+        logger.info(f"Successfully parsed {len(self.kids_audio_data)} kids audio files")
+        logger.info(f"Parse errors: {parse_errors}")
+        
+        # Print age distribution
+        if len(self.kids_audio_data) > 0:
+            age_dist = self.kids_audio_data.groupby('numeric_age').size()
+            logger.info(f"Kids age distribution: {dict(age_dist)}")
+        
+        return self.kids_audio_data
     
     def _get_age_group(self, age):
         """Map numeric age to age group"""
@@ -403,13 +492,56 @@ class DataAnalyzer:
             'class_weights': class_weights
         }
     
-    def prepare_audio_data(self):
-        """Prepare audio data with shuffling, stratification, and class weights"""
+    def prepare_audio_data(self, include_kids=True):
+        """Prepare audio data with shuffling, stratification, and class weights
+        
+        Args:
+            include_kids: Whether to include kids audio dataset (for child age group)
+        """
         if self.audio_data is None:
             self.analyze_common_voice()
         
+        # Start with Common Voice data
+        combined_df = self.audio_data.copy()
+        combined_df['source'] = 'common_voice'
+        
+        # Add kids audio data if requested
+        if include_kids:
+            if self.kids_audio_data is None:
+                self.analyze_kids_audio()
+            
+            if self.kids_audio_data is not None and len(self.kids_audio_data) > 0:
+                logger.info(f"Adding {len(self.kids_audio_data)} kids audio samples")
+                
+                # Align columns
+                kids_df = self.kids_audio_data.copy()
+                
+                # Ensure common columns exist
+                for col in ['filename', 'numeric_age', 'age_group', 'is_adult', 'text', 'filepath']:
+                    if col not in combined_df.columns:
+                        combined_df[col] = ''
+                    if col not in kids_df.columns:
+                        kids_df[col] = ''
+                
+                # Select only necessary columns for combination
+                common_cols = ['filepath', 'filename', 'numeric_age', 'age_group', 'is_adult', 'text', 'source']
+                
+                # Add any missing columns
+                for col in common_cols:
+                    if col not in combined_df.columns:
+                        combined_df[col] = ''
+                    if col not in kids_df.columns:
+                        kids_df[col] = ''
+                
+                combined_df = pd.concat([
+                    combined_df[common_cols],
+                    kids_df[common_cols]
+                ], ignore_index=True)
+                
+                logger.info(f"Combined audio dataset: {len(combined_df)} total samples")
+        
         # Shuffle
-        df = self.audio_data.sample(frac=1, random_state=42).reset_index(drop=True)
+        df = combined_df.sample(frac=1, random_state=42).reset_index(drop=True)
         
         # Stratified splits
         train, val, test = self.get_stratified_splits(df)

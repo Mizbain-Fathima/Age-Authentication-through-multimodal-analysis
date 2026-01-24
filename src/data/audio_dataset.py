@@ -12,11 +12,12 @@ import librosa
 from loguru import logger
 import warnings
 warnings.filterwarnings('ignore')
+pd.options.mode.chained_assignment = None
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from src.config import (
-    AUDIO_DATA_DIR, SAMPLE_RATE, N_MFCC, N_MELS, 
+    AUDIO_DATA_DIR, KIDS_AUDIO_DATA_DIR, SAMPLE_RATE, N_MFCC, N_MELS, 
     HOP_LENGTH, N_FFT, MAX_AUDIO_LENGTH, BATCH_SIZE, AGE_GROUPS
 )
 
@@ -172,8 +173,22 @@ class CommonVoiceDataset(Dataset):
     def __len__(self):
         return len(self.data)
     
-    def _resolve_audio_path(self, filename):
-        """Resolve audio path, handling nested directory structure"""
+    def _resolve_audio_path(self, row):
+        """Resolve audio path, handling different data sources"""
+        filename = row.get('filename', '')
+        source = row.get('source', 'common_voice')
+        
+        # Handle kids audio data (stored with full filepath)
+        if source == 'kids_audio':
+            filepath = row.get('filepath', '')
+            if filepath and Path(filepath).exists():
+                return Path(filepath)
+            # Try kids audio directory
+            kids_path = KIDS_AUDIO_DATA_DIR / filename
+            if kids_path.exists():
+                return kids_path
+        
+        # Handle Common Voice data
         # Try direct path first
         direct_path = AUDIO_DATA_DIR / filename
         if direct_path.exists():
@@ -188,7 +203,7 @@ class CommonVoiceDataset(Dataset):
     
     def __getitem__(self, idx):
         row = self.data.iloc[idx]
-        audio_path = self._resolve_audio_path(row["filename"])
+        audio_path = self._resolve_audio_path(row)
 
         cache_file = self.cache_dir / f"{audio_path.stem}.npz"
 
@@ -222,6 +237,9 @@ class CommonVoiceDataset(Dataset):
             combined = np.stack([mfcc_padded, mel], axis=0)
             features = torch.tensor(combined, dtype=torch.float32)
 
+        # Handle potential NaN or missing values
+        text = row.get("text", "") if pd.notna(row.get("text", "")) else ""
+        
         return {
             "features": features,
             "age": torch.tensor(row["numeric_age"], dtype=torch.float32),
@@ -229,7 +247,7 @@ class CommonVoiceDataset(Dataset):
                 self.age_group_to_idx.get(row["age_group"], 2), dtype=torch.long
             ),
             "is_adult": torch.tensor(int(row["is_adult"]), dtype=torch.float32),
-            "text": row["text"],
+            "text": text,
             "filepath": str(audio_path)
         }
 

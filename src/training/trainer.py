@@ -144,14 +144,45 @@ class Trainer:
         """Forward pass - to be implemented by subclass"""
         raise NotImplementedError
     
-    def train(self, save_best=True, early_stopping=10):
-        """Full training loop"""
-        logger.info(f"Starting training for {self.epochs} epochs")
+    def save_checkpoint(self, filename):
+        """Save model checkpoint"""
+        checkpoint_path = MODELS_DIR / filename
+        torch.save({
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'epoch': self.best_epoch,
+            'best_val_loss': self.best_val_loss,
+            'history': self.history
+        }, checkpoint_path)
+        logger.info(f"Saved checkpoint to {checkpoint_path}")
+    
+    def load_checkpoint(self, filename):
+        """Load model checkpoint and return the starting epoch"""
+        checkpoint_path = MODELS_DIR / filename
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Restore training state
+        self.best_epoch = checkpoint.get('epoch', 0)
+        self.best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+        self.history = checkpoint.get('history', self.history)
+        
+        logger.info(f"Loaded checkpoint from {checkpoint_path}")
+        logger.info(f"Resuming from epoch {self.best_epoch}, best_val_loss: {self.best_val_loss:.4f}")
+        
+        return self.best_epoch
+    
+    def train(self, save_best=True, early_stopping=10, start_epoch=0):
+        """Full training loop with resume support"""
+        logger.info(f"Starting training for {self.epochs} epochs (starting from epoch {start_epoch + 1})")
         logger.info(f"Device: {self.device}, AMP: {self.use_amp}")
         
         patience_counter = 0
         
-        for epoch in range(self.epochs):
+        for epoch in range(start_epoch, self.epochs):
             logger.info(f"\nEpoch {epoch+1}/{self.epochs}")
             
             # Train
@@ -192,28 +223,6 @@ class Trainer:
         
         logger.info(f"\nTraining complete. Best model at epoch {self.best_epoch}")
         return self.history
-    
-    def save_checkpoint(self, filename):
-        """Save model checkpoint"""
-        checkpoint_path = MODELS_DIR / filename
-        torch.save({
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'epoch': self.best_epoch,
-            'best_val_loss': self.best_val_loss,
-            'history': self.history
-        }, checkpoint_path)
-        logger.info(f"Saved checkpoint to {checkpoint_path}")
-    
-    def load_checkpoint(self, filename):
-        """Load model checkpoint"""
-        checkpoint_path = MODELS_DIR / filename
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        logger.info(f"Loaded checkpoint from {checkpoint_path}")
 
 
 class FaceTrainer(Trainer):
@@ -284,8 +293,12 @@ class FusionTrainer(Trainer):
         return loss_dict, predictions, targets
 
 
-def train_face_model():
-    """Train face age prediction model"""
+def train_face_model(resume=False):
+    """Train face age prediction model
+    
+    Args:
+        resume: If True, resume training from the last saved checkpoint
+    """
     from src.data.data_analysis import DataAnalyzer
     from src.data.face_dataset import get_face_dataloaders
     from src.models.face_model import create_face_model, FaceAgeLoss
@@ -307,17 +320,31 @@ def train_face_model():
         criterion=criterion,
         epochs=12,
         model_name='face_age_model',
-        use_amp = False
+        use_amp=False
     )
     
+    # Resume from checkpoint if requested
+    start_epoch = 0
+    if resume:
+        checkpoint_path = MODELS_DIR / 'face_age_model_best.pth'
+        if checkpoint_path.exists():
+            start_epoch = trainer.load_checkpoint('face_age_model_best.pth')
+            logger.info(f"Resuming face model training from epoch {start_epoch + 1}")
+        else:
+            logger.warning("No checkpoint found, starting from scratch")
+    
     # Train
-    history = trainer.train(save_best=True, early_stopping=5)
+    history = trainer.train(save_best=True, early_stopping=5, start_epoch=start_epoch)
     
     return trainer, history
 
 
-def train_voice_model():
-    """Train voice age prediction model"""
+def train_voice_model(resume=False):
+    """Train voice age prediction model
+    
+    Args:
+        resume: If True, resume training from the last saved checkpoint
+    """
     from src.data.data_analysis import DataAnalyzer
     from src.data.audio_dataset import get_audio_dataloaders
     from src.models.voice_model import create_voice_model, VoiceAgeLoss
@@ -339,22 +366,45 @@ def train_voice_model():
         criterion=criterion,
         epochs=12,
         model_name='voice_age_model',
-        use_amp = False
+        use_amp=False
     )
     
+    # Resume from checkpoint if requested
+    start_epoch = 0
+    if resume:
+        checkpoint_path = MODELS_DIR / 'voice_age_model_best.pth'
+        if checkpoint_path.exists():
+            start_epoch = trainer.load_checkpoint('voice_age_model_best.pth')
+            logger.info(f"Resuming voice model training from epoch {start_epoch + 1}")
+        else:
+            logger.warning("No checkpoint found, starting from scratch")
+
     # Train
-    history = trainer.train(save_best=True, early_stopping=5)
+    history = trainer.train(save_best=True, early_stopping=5, start_epoch=start_epoch)
     
     return trainer, history
 
-def train_fusion_model():
+def train_fusion_model(resume=False):
+    """Train fusion model with paired face+audio data
+    
+    Args:
+        resume: If True, resume training from the last saved checkpoint
+    """
     from src.data.fusion_dataset import get_fusion_dataloaders
-    from src.models.fusion_model import create_fusion_model, FusionAgeLoss
+    from src.models.fusion_model import create_fusion_model, FusionLoss
 
     loaders = get_fusion_dataloaders(batch_size=16, num_workers=0)  # 0 for Windows compatibility
 
-    model = create_fusion_model()
-    criterion = FusionAgeLoss()
+    # Create fusion model with pretrained encoders
+    face_checkpoint = MODELS_DIR / 'face_age_model_best.pth'
+    voice_checkpoint = MODELS_DIR / 'voice_age_model_best.pth'
+    
+    model = create_fusion_model(
+        face_checkpoint=str(face_checkpoint) if face_checkpoint.exists() else None,
+        voice_checkpoint=str(voice_checkpoint) if voice_checkpoint.exists() else None,
+        freeze_encoders=True
+    )
+    criterion = FusionLoss()
 
     trainer = FusionTrainer(
         model=model,
@@ -365,8 +415,19 @@ def train_fusion_model():
         model_name='fusion_age_model',
         use_amp=False
     )
+    
+    # Resume from checkpoint if requested
+    start_epoch = 0
+    if resume:
+        checkpoint_path = MODELS_DIR / 'fusion_age_model_best.pth'
+        if checkpoint_path.exists():
+            start_epoch = trainer.load_checkpoint('fusion_age_model_best.pth')
+            logger.info(f"Resuming fusion model training from epoch {start_epoch + 1}")
+        else:
+            logger.warning("No checkpoint found, starting from scratch")
 
-    return trainer.train(early_stopping=3)
+    history = trainer.train(early_stopping=3, start_epoch=start_epoch)
+    return trainer, history
 
 
 

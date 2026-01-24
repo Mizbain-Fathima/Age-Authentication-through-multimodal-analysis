@@ -9,9 +9,14 @@ Detects real faces vs photos/videos using multiple techniques:
 import cv2
 import numpy as np
 from collections import deque
-import mediapipe as mp
 from loguru import logger
 from typing import List, Dict, Tuple, Optional
+import threading
+
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.core import base_options as base_options_module
+from mediapipe.tasks.python.vision import face_landmarker
+from mediapipe import Image as MPImage, ImageFormat
 
 import sys
 from pathlib import Path
@@ -22,7 +27,11 @@ from src.config import MIN_FACE_FRAMES, BLINK_THRESHOLD, MOTION_THRESHOLD
 class FaceLivenessDetector:
     """
     Comprehensive face liveness detection using multiple signals
+    Thread-safe implementation using thread-local storage for MediaPipe
     """
+    
+    # Thread-local storage for MediaPipe instances
+    _local = threading.local()
     
     def __init__(self, min_frames=MIN_FACE_FRAMES, blink_threshold=BLINK_THRESHOLD,
                  motion_threshold=MOTION_THRESHOLD):
@@ -30,14 +39,19 @@ class FaceLivenessDetector:
         self.blink_threshold = blink_threshold
         self.motion_threshold = motion_threshold
         
-        # Initialize MediaPipe Face Mesh
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
+        # MediaPipe Tasks model path - will be created per thread
+        model_path = self._get_model_path()
+        base_options = base_options_module.BaseOptions(model_asset_path=model_path)
+        options = face_landmarker.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=False,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
             min_tracking_confidence=0.5
         )
+        self.face_landmarker_options = options
         
         # Landmark indices for eye aspect ratio
         # Left eye landmarks
@@ -59,6 +73,39 @@ class FaceLivenessDetector:
         self.last_landmarks = None
         
         logger.info("Initialized FaceLivenessDetector")
+    
+    def _get_model_path(self) -> str:
+        """Get path to face landmarker model"""
+        # Resolve project root: src/liveness/face_liveness.py -> project_root
+        project_root = Path(__file__).resolve().parents[2]
+        model_path = project_root / "models" / "face_landmarker.task"
+        
+        if model_path.exists():
+            return str(model_path)
+        
+        raise RuntimeError(
+            f"FaceLandmarker model not found at: {model_path}. "
+            "Please ensure models/face_landmarker.task exists in the project root."
+        )
+    
+    @property
+    def face_landmarker(self):
+        """Get thread-local MediaPipe FaceLandmarker instance"""
+        if not hasattr(self._local, 'face_landmarker'):
+            self._local.face_landmarker = face_landmarker.FaceLandmarker.create_from_options(
+                self.face_landmarker_options
+            )
+        return self._local.face_landmarker
+    
+    def _convert_landmarks(self, mp_landmarks) -> List:
+        """Convert MediaPipe Tasks landmarks to legacy format for compatibility"""
+        class Landmark:
+            def __init__(self, x, y, z=0):
+                self.x = x
+                self.y = y
+                self.z = z
+        
+        return [Landmark(lm.x, lm.y, lm.z) for lm in mp_landmarks]
     
     def _calculate_ear(self, landmarks, eye_indices):
         """
@@ -246,7 +293,8 @@ class FaceLivenessDetector:
         
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
+        mp_image = MPImage(image_format=ImageFormat.SRGB, data=rgb_frame)
+        detection_result = self.face_landmarker.detect(mp_image)
         
         output = {
             'face_detected': False,
@@ -259,8 +307,9 @@ class FaceLivenessDetector:
             'landmarks': None
         }
         
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
+        if detection_result.face_landmarks and len(detection_result.face_landmarks) > 0:
+            mp_landmarks = detection_result.face_landmarks[0]
+            landmarks = self._convert_landmarks(mp_landmarks)
             output['face_detected'] = True
             output['landmarks'] = landmarks
             
@@ -389,6 +438,192 @@ class FaceLivenessDetector:
             )
         }
     
+    def analyze_comprehensive(self, frames: List[np.ndarray]) -> Tuple[Dict, Dict, Dict, List]:
+        """
+        Comprehensive single-pass analysis that extracts all metrics at once
+        
+        Args:
+            frames: List of BGR images
+        
+        Returns:
+            Tuple of (liveness_result, blink_info, head_movement, face_crops)
+            - liveness_result: Face liveness analysis
+            - blink_info: Blink analysis details
+            - head_movement: Head movement analysis
+            - face_crops: List of face crops for quality calculation
+        """
+        self.reset()
+        
+        frame_results = []
+        face_crops = []
+        ear_values = []
+        blink_frames = []
+        poses = []
+        
+        # Single pass through all frames
+        for frame in frames:
+            result = self.process_frame(frame)
+            frame_results.append(result)
+            
+            # Extract face crop for quality calculation
+            if result['face_detected']:
+                face_crop = self.get_face_crop(frame)
+                if face_crop is not None:
+                    face_crops.append(face_crop)
+            
+            # Collect EAR values for blink analysis
+            if result['face_detected']:
+                ear_values.append(result['ear_value'])
+                if result['blink_detected']:
+                    blink_frames.append(len(ear_values) - 1)
+            
+            # Collect poses for head movement
+            if result['face_detected'] and result['head_pose']:
+                pose = result['head_pose']
+                poses.append({
+                    'pitch': pose['pitch'],
+                    'yaw': pose['yaw'],
+                    'roll': pose['roll']
+                })
+        
+        # Aggregate liveness results
+        faces_detected = sum(1 for r in frame_results if r['face_detected'])
+        blinks_detected = sum(1 for r in frame_results if r['blink_detected'])
+        
+        avg_ear = np.mean([r['ear_value'] for r in frame_results if r['ear_value'] > 0]) if frame_results else 0
+        avg_texture = np.mean([r['texture_score'] for r in frame_results])
+        avg_motion = np.mean([r['motion_score'] for r in frame_results if r['motion_score'] > 0]) if frame_results else 0
+        
+        pose_variance = 0
+        if self.pose_history:
+            pose_array = np.array(list(self.pose_history))
+            pose_variance = np.mean(np.var(pose_array, axis=0))
+        
+        liveness_score = self._calculate_liveness_score(
+            faces_detected / max(len(frames), 1),
+            blinks_detected,
+            avg_texture,
+            avg_motion,
+            pose_variance
+        )
+        
+        liveness_result = {
+            'is_live': liveness_score > 0.6,
+            'liveness_score': liveness_score,
+            'total_frames': len(frames),
+            'faces_detected': faces_detected,
+            'blinks_detected': blinks_detected,
+            'average_ear': avg_ear,
+            'average_texture_score': avg_texture,
+            'average_motion_score': avg_motion,
+            'pose_variance': pose_variance,
+            'confidence': min(liveness_score, 1.0),
+            'reasons': self._get_liveness_reasons(
+                faces_detected / max(len(frames), 1),
+                blinks_detected,
+                avg_texture,
+                avg_motion,
+                pose_variance
+            )
+        }
+        
+        # Extract blink info
+        blink_count = len(blink_frames)
+        fps = 30.0
+        duration_seconds = len(frames) / fps if len(frames) > 0 else 1.0
+        blink_rate = blink_count / duration_seconds if duration_seconds > 0 else 0.0
+        is_valid = blink_count >= 1 and blink_rate >= 0.1 and blink_rate <= 1.0
+        
+        blink_score = 0.0
+        if blink_count == 0:
+            blink_score = 0.0
+        elif blink_count >= 2:
+            blink_score = 1.0
+        else:
+            blink_score = 0.6
+        
+        blink_intervals = []
+        if len(blink_frames) > 1:
+            for i in range(1, len(blink_frames)):
+                interval = blink_frames[i] - blink_frames[i-1]
+                blink_intervals.append(interval)
+            
+            if len(blink_intervals) > 1:
+                interval_variance = np.var(blink_intervals)
+                if 5 <= np.mean(blink_intervals) <= 30:
+                    blink_score = min(1.0, blink_score + 0.2)
+                else:
+                    blink_score = max(0.0, blink_score - 0.2)
+        
+        blink_info = {
+            'blink_count': blink_count,
+            'blink_rate': blink_rate,
+            'is_valid': is_valid,
+            'blink_score': blink_score,
+            'blink_intervals': blink_intervals
+        }
+        
+        # Extract head movement info
+        if len(poses) < 2:
+            head_movement = {
+                'motion_detected': False,
+                'motion_score': 0.0,
+                'movement_pattern': 'insufficient_data',
+                'head_pose_changes': []
+            }
+        else:
+            pose_changes = []
+            for i in range(1, len(poses)):
+                prev_pose = poses[i-1]
+                curr_pose = poses[i]
+                
+                pitch_change = abs(curr_pose['pitch'] - prev_pose['pitch'])
+                yaw_change = abs(curr_pose['yaw'] - prev_pose['yaw'])
+                roll_change = abs(curr_pose['roll'] - prev_pose['roll'])
+                total_change = pitch_change + yaw_change + roll_change
+                
+                pose_changes.append({
+                    'frame': i,
+                    'pitch_change': pitch_change,
+                    'yaw_change': yaw_change,
+                    'roll_change': roll_change,
+                    'total_change': total_change
+                })
+            
+            if pose_changes:
+                total_motion = sum(p['total_change'] for p in pose_changes)
+                avg_motion = total_motion / len(pose_changes)
+                max_motion = max(p['total_change'] for p in pose_changes)
+                
+                motion_detected = avg_motion > 0.5 or max_motion > 2.0
+                
+                if avg_motion < 0.1:
+                    motion_score = 0.2
+                elif avg_motion > 5.0:
+                    motion_score = 0.5
+                else:
+                    motion_score = min(1.0, 0.5 + (avg_motion / 5.0) * 0.5)
+                
+                if avg_motion < 0.5:
+                    pattern = 'minimal'
+                elif avg_motion < 2.0:
+                    pattern = 'natural'
+                else:
+                    pattern = 'excessive'
+            else:
+                motion_detected = False
+                motion_score = 0.0
+                pattern = 'no_data'
+            
+            head_movement = {
+                'motion_detected': motion_detected,
+                'motion_score': motion_score,
+                'movement_pattern': pattern,
+                'head_pose_changes': pose_changes
+            }
+        
+        return liveness_result, blink_info, head_movement, face_crops
+    
     def _calculate_liveness_score(self, face_ratio, blinks, texture, motion, pose_var):
         """Calculate weighted liveness score"""
         scores = []
@@ -457,10 +692,12 @@ class FaceLivenessDetector:
     def get_face_crop(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """Extract cropped face region from frame"""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
+        mp_image = MPImage(image_format=ImageFormat.SRGB, data=rgb_frame)
+        detection_result = self.face_landmarker.detect(mp_image)
         
-        if results.multi_face_landmarks:
-            landmarks = results.multi_face_landmarks[0].landmark
+        if detection_result.face_landmarks and len(detection_result.face_landmarks) > 0:
+            mp_landmarks = detection_result.face_landmarks[0]
+            landmarks = self._convert_landmarks(mp_landmarks)
             h, w = frame.shape[:2]
             bbox = self._get_face_bbox(landmarks, w, h, padding=0.3)
             if bbox:
@@ -468,4 +705,164 @@ class FaceLivenessDetector:
                 return frame[y1:y2, x1:x2]
         
         return None
+    
+    def get_blink_analysis(self, frames: List[np.ndarray]) -> Dict:
+        """
+        Get detailed blink analysis from video frames
+        
+        Returns:
+            {
+                'blink_count': int,
+                'blink_rate': float,
+                'is_valid': bool,
+                'blink_score': float,
+                'blink_intervals': List[float]
+            }
+        """
+        self.reset()
+        
+        ear_values = []
+        blink_frames = []
+        
+        for frame in frames:
+            result = self.process_frame(frame)
+            if result['face_detected']:
+                ear_values.append(result['ear_value'])
+                if result['blink_detected']:
+                    blink_frames.append(len(ear_values) - 1)
+        
+        blink_count = len(blink_frames)
+        
+        # Calculate blink intervals
+        blink_intervals = []
+        if len(blink_frames) > 1:
+            for i in range(1, len(blink_frames)):
+                interval = blink_frames[i] - blink_frames[i-1]
+                blink_intervals.append(interval)
+        
+        # Calculate blink rate (blinks per second, assuming ~30 fps)
+        fps = 30.0
+        duration_seconds = len(frames) / fps if len(frames) > 0 else 1.0
+        blink_rate = blink_count / duration_seconds if duration_seconds > 0 else 0.0
+        
+        # Validate blink pattern
+        # Normal blink rate: 15-20 blinks per minute (0.25-0.33 per second)
+        # For a 5-second video, expect 1-2 blinks
+        is_valid = blink_count >= 1 and blink_rate >= 0.1 and blink_rate <= 1.0
+        
+        # Calculate blink score
+        if blink_count == 0:
+            blink_score = 0.0
+        elif blink_count >= 2:
+            blink_score = 1.0
+        else:
+            blink_score = 0.6
+        
+        # Adjust score based on blink intervals (natural blinks have consistent intervals)
+        if len(blink_intervals) > 1:
+            interval_variance = np.var(blink_intervals)
+            # Too consistent (robotic) or too inconsistent (unnatural) reduces score
+            if 5 <= np.mean(blink_intervals) <= 30:  # Natural interval range
+                blink_score = min(1.0, blink_score + 0.2)
+            else:
+                blink_score = max(0.0, blink_score - 0.2)
+        
+        return {
+            'blink_count': blink_count,
+            'blink_rate': blink_rate,
+            'is_valid': is_valid,
+            'blink_score': blink_score,
+            'blink_intervals': blink_intervals
+        }
+    
+    def get_head_movement_analysis(self, frames: List[np.ndarray]) -> Dict:
+        """
+        Get detailed head movement analysis
+        
+        Returns:
+            {
+                'motion_detected': bool,
+                'motion_score': float,
+                'movement_pattern': str,
+                'head_pose_changes': List[Dict]
+            }
+        """
+        self.reset()
+        
+        pose_changes = []
+        poses = []
+        
+        for frame in frames:
+            result = self.process_frame(frame)
+            if result['face_detected'] and result['head_pose']:
+                pose = result['head_pose']
+                poses.append({
+                    'pitch': pose['pitch'],
+                    'yaw': pose['yaw'],
+                    'roll': pose['roll']
+                })
+        
+        if len(poses) < 2:
+            return {
+                'motion_detected': False,
+                'motion_score': 0.0,
+                'movement_pattern': 'insufficient_data',
+                'head_pose_changes': []
+            }
+        
+        # Calculate pose changes
+        for i in range(1, len(poses)):
+            prev_pose = poses[i-1]
+            curr_pose = poses[i]
+            
+            pitch_change = abs(curr_pose['pitch'] - prev_pose['pitch'])
+            yaw_change = abs(curr_pose['yaw'] - prev_pose['yaw'])
+            roll_change = abs(curr_pose['roll'] - prev_pose['roll'])
+            
+            total_change = pitch_change + yaw_change + roll_change
+            
+            pose_changes.append({
+                'frame': i,
+                'pitch_change': pitch_change,
+                'yaw_change': yaw_change,
+                'roll_change': roll_change,
+                'total_change': total_change
+            })
+        
+        # Calculate motion metrics
+        if pose_changes:
+            total_motion = sum(p['total_change'] for p in pose_changes)
+            avg_motion = total_motion / len(pose_changes)
+            max_motion = max(p['total_change'] for p in pose_changes)
+            
+            # Motion detected if there's significant movement
+            motion_detected = avg_motion > 0.5 or max_motion > 2.0
+            
+            # Calculate motion score (0-1)
+            # Natural head movement: moderate, consistent changes
+            if avg_motion < 0.1:
+                motion_score = 0.2  # Too still
+            elif avg_motion > 5.0:
+                motion_score = 0.5  # Too erratic
+            else:
+                motion_score = min(1.0, 0.5 + (avg_motion / 5.0) * 0.5)
+            
+            # Determine movement pattern
+            if avg_motion < 0.5:
+                pattern = 'minimal'
+            elif avg_motion < 2.0:
+                pattern = 'natural'
+            else:
+                pattern = 'excessive'
+        else:
+            motion_detected = False
+            motion_score = 0.0
+            pattern = 'no_data'
+        
+        return {
+            'motion_detected': motion_detected,
+            'motion_score': motion_score,
+            'movement_pattern': pattern,
+            'head_pose_changes': pose_changes
+        }
 

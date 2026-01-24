@@ -1,5 +1,8 @@
 venv/
 audio-data/
 image-data/
+kids-audio-data/
 logs/
 models/
+cache/
+__pycache__/
