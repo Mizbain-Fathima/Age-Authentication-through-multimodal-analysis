@@ -110,6 +110,9 @@ python run.py train face
 
 # Train voice age model
 python run.py train voice
+
+# Train Fusion model
+python run.py train fusion
 ```
 
 ### 4. Start the API Server
