@@ -16,8 +16,10 @@
         <main>
             <!-- Video Preview Section -->
             <div class="video-section">
-                <div class="video-container">
-                    <video id="videoPreview" autoplay muted playsinline></video>
+                <div class="camera-container">
+                    <video id="videoBlur" autoplay playsinline muted></video>
+                    <video id="videoSharp" autoplay playsinline muted></video>
+                    <div class="face-ring"></div>
                     <div class="video-overlay" id="videoOverlay">
                         <div class="face-guide"></div>
                     </div>
@@ -31,7 +33,7 @@
             <!-- Captcha Display -->
             <div class="captcha-section" id="captchaSection" style="display: none;">
                 <div class="captcha-card">
-                    <div class="captcha-label">Please read aloud:</div>
+                    <div class="captcha-label">Please read the sentence clearly as shown below:</div>
                     <div class="captcha-text" id="captchaText"></div>
                     <div class="captcha-timer" id="captchaTimer" style="display: none;"></div>
                 </div>
@@ -85,7 +87,8 @@
                     <!-- Age Display -->
                     <div class="age-display">
                         <div class="age-number" id="ageNumber">--</div>
-                        <div class="age-label">Estimated Age</div>
+                        <div class="age-label">Estimated Apparent Age</div>
+                        <div class="age-note">Based on facial appearance</div>
                     </div>
 
                     <!-- Adult Status -->
@@ -125,7 +128,15 @@
                             <div class="metric-bar">
                                 <div class="metric-fill" id="lipSyncBar" style="width: 0%"></div>
                             </div>
-                            <span class="metric-value" id="lipSyncValue">0%</span>
+                            <span class="metric-value" id="lipSyncValue">--</span>
+                        </div>
+
+                        <div class="metric-item">
+                            <span class="metric-label">Eye Blink</span>
+                            <div class="metric-bar">
+                                <div class="metric-fill" id="eyeBlinkBar" style="width: 0%"></div>
+                            </div>
+                            <span class="metric-value" id="eyeBlinkValue">--</span>
                         </div>
                     </div>
 

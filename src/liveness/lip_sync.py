@@ -1,13 +1,19 @@
 """
 Lip Sync Verification
-Verifies that lip movements correlate with spoken audio
+Verifies that lip movements correlate with spoken audio using MediaPipe Tasks FaceLandmarker
 """
 import cv2
 import numpy as np
 from collections import deque
 from typing import List, Dict, Tuple, Optional
-from scipy.signal import correlate
+from scipy.stats import pearsonr
 from loguru import logger
+import threading
+
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.core import base_options as base_options_module
+from mediapipe.tasks.python.vision import face_landmarker
+from mediapipe import Image as MPImage, ImageFormat
 
 import sys
 from pathlib import Path
@@ -17,76 +23,86 @@ from src.config import LIP_SYNC_THRESHOLD
 
 class LipSyncVerifier:
     """
-    Verify lip-audio synchronization
+    Verify lip-audio synchronization using MediaPipe Tasks FaceLandmarker
     Analyzes correlation between lip movement and audio energy
     """
+    
+    # Thread-local storage for MediaPipe instances
+    _local = threading.local()
     
     def __init__(self, sync_threshold=LIP_SYNC_THRESHOLD, fps=30, audio_sample_rate=16000):
         self.sync_threshold = sync_threshold
         self.fps = fps
         self.audio_sample_rate = audio_sample_rate
         
-        # MediaPipe for lip landmarks
-        import mediapipe as mp
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
+        # MediaPipe Tasks model path
+        model_path = self._get_model_path()
+        base_options = base_options_module.BaseOptions(model_asset_path=model_path)
+        options = face_landmarker.FaceLandmarkerOptions(
+            base_options=base_options,
+            output_face_blendshapes=False,
+            running_mode=vision.RunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
             min_tracking_confidence=0.5
         )
+        self.face_landmarker_options = options
         
-        # Lip landmark indices (inner lip for better movement detection)
-        self.UPPER_LIP = [13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14]
-        self.LOWER_LIP = [14, 87, 178, 88, 95, 78, 191, 80, 81, 82, 13]
+        # Lip landmark indices (MediaPipe 468 landmarks)
+        # Upper lip landmarks
+        self.UPPER_LIP = [13, 82, 81, 80, 78, 95, 88, 178, 87, 14, 317, 402, 318, 324]
+        # Lower lip landmarks
+        self.LOWER_LIP = [14, 87, 178, 88, 95, 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
         
-        logger.info("Initialized LipSyncVerifier")
+        logger.info("Initialized LipSyncVerifier with MediaPipe Tasks")
     
-    def _extract_lip_features(self, frame: np.ndarray) -> Optional[Dict]:
-        """Extract lip features from a frame"""
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.face_mesh.process(rgb_frame)
+    @property
+    def face_landmarker(self):
+        """Get thread-local FaceLandmarker instance"""
+        if not hasattr(self._local, 'face_landmarker'):
+            self._local.face_landmarker = face_landmarker.FaceLandmarker.create_from_options(
+                self.face_landmarker_options
+            )
+        return self._local.face_landmarker
+    
+    def _get_model_path(self) -> str:
+        """Get path to face landmarker model"""
+        project_root = Path(__file__).resolve().parents[2]
+        model_path = project_root / "models" / "face_landmarker.task"
+        if model_path.exists():
+            return str(model_path)
+        raise RuntimeError(f"FaceLandmarker model not found at: {model_path}")
+    
+    def _extract_lip_features(self, frame: np.ndarray) -> Optional[float]:
+        """
+        Extract mouth opening distance from a frame
         
-        if not results.multi_face_landmarks:
+        Returns:
+            Mouth opening distance (float) or None if face not detected
+        """
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = MPImage(image_format=ImageFormat.SRGB, data=rgb_frame)
+        
+        detection_result = self.face_landmarker.detect(mp_image)
+        
+        if not detection_result.face_landmarks or len(detection_result.face_landmarks) == 0:
             return None
         
-        landmarks = results.multi_face_landmarks[0].landmark
+        landmarks = detection_result.face_landmarks[0]
         h, w = frame.shape[:2]
         
-        # Get lip coordinates
-        upper_lip_pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in self.UPPER_LIP]
-        lower_lip_pts = [(landmarks[i].x * w, landmarks[i].y * h) for i in self.LOWER_LIP]
+        # Get upper and lower lip center points
+        upper_lip_y = np.mean([landmarks[i].y * h for i in self.UPPER_LIP])
+        lower_lip_y = np.mean([landmarks[i].y * h for i in self.LOWER_LIP])
         
-        # Calculate lip opening (vertical distance)
-        upper_center = np.mean([landmarks[13].y, landmarks[14].y]) * h
-        lower_center = np.mean([landmarks[14].y, landmarks[17].y]) * h
+        # Calculate mouth opening (vertical distance)
+        mouth_opening = abs(upper_lip_y - lower_lip_y)
         
-        lip_distance = abs(landmarks[14].y - landmarks[13].y) * h
-        
-        # Calculate lip width
-        lip_width = abs(landmarks[78].x - landmarks[308].x) * w
-        
-        # Lip aspect ratio
-        lar = lip_distance / (lip_width + 1e-6)
-        
-        # Lip area (approximate)
-        upper_lip_area = cv2.contourArea(np.array(upper_lip_pts, dtype=np.int32))
-        lower_lip_area = cv2.contourArea(np.array(lower_lip_pts, dtype=np.int32))
-        total_area = upper_lip_area + lower_lip_area
-        
-        return {
-            'lip_distance': lip_distance,
-            'lip_width': lip_width,
-            'lip_aspect_ratio': lar,
-            'lip_area': total_area,
-            'upper_lip_points': upper_lip_pts,
-            'lower_lip_points': lower_lip_pts
-        }
+        return mouth_opening
     
     def _extract_audio_energy(self, audio: np.ndarray, num_frames: int) -> np.ndarray:
-        """Extract audio energy envelope aligned to video frames"""
-        import librosa
-        
+        """Extract RMS audio energy envelope aligned to video frames"""
         # Calculate samples per video frame
         samples_per_frame = int(self.audio_sample_rate / self.fps)
         
@@ -105,60 +121,22 @@ class LipSyncVerifier:
         
         energy = np.array(energy)
         
-        # Normalize
+        # Normalize to [0, 1]
         if np.max(energy) > 0:
             energy = energy / np.max(energy)
         
         return energy
     
-    def _compute_correlation(self, lip_movement: np.ndarray, 
-                             audio_energy: np.ndarray) -> Tuple[float, int]:
-        """
-        Compute cross-correlation between lip movement and audio energy
-        
-        Returns:
-            Tuple of (max_correlation, lag_in_frames)
-        """
-        if len(lip_movement) < 5 or len(audio_energy) < 5:
-            return 0.0, 0
-        
-        # Normalize signals
-        lip_norm = (lip_movement - np.mean(lip_movement)) / (np.std(lip_movement) + 1e-8)
-        audio_norm = (audio_energy - np.mean(audio_energy)) / (np.std(audio_energy) + 1e-8)
-        
-        # Zero-pad to same length
-        max_len = max(len(lip_norm), len(audio_norm))
-        lip_padded = np.pad(lip_norm, (0, max_len - len(lip_norm)), mode='constant')
-        audio_padded = np.pad(audio_norm, (0, max_len - len(audio_norm)), mode='constant')
-        
-        # Cross-correlation
-        correlation = correlate(lip_padded, audio_padded, mode='full')
-        
-        # Find peak
-        mid_point = len(correlation) // 2
-        # Allow some lag (up to 10 frames = ~333ms at 30fps)
-        search_range = 10
-        search_region = correlation[mid_point - search_range:mid_point + search_range + 1]
-        
-        max_corr_idx = np.argmax(np.abs(search_region))
-        max_correlation = np.abs(search_region[max_corr_idx])
-        lag = max_corr_idx - search_range
-        
-        # Normalize by signal length
-        max_correlation = max_correlation / max_len
-        
-        return max_correlation, lag
-    
     def verify_sync(self, frames: List[np.ndarray], audio: np.ndarray) -> Dict:
         """
-        Verify lip-audio synchronization
+        Verify lip-audio synchronization using Pearson correlation
         
         Args:
             frames: List of video frames (BGR)
             audio: Audio waveform at self.audio_sample_rate
         
         Returns:
-            Verification results
+            Verification results with real correlation score
         """
         if len(frames) < 10:
             return {
@@ -169,14 +147,14 @@ class LipSyncVerifier:
                 'reason': 'Insufficient frames for analysis'
             }
         
-        # Extract lip movement from frames
+        # Extract lip movement (mouth opening) from frames
         lip_movements = []
         valid_frames = 0
         
         for frame in frames:
-            features = self._extract_lip_features(frame)
-            if features:
-                lip_movements.append(features['lip_aspect_ratio'])
+            mouth_opening = self._extract_lip_features(frame)
+            if mouth_opening is not None:
+                lip_movements.append(mouth_opening)
                 valid_frames += 1
             else:
                 # Interpolate if face not detected
@@ -200,73 +178,60 @@ class LipSyncVerifier:
         # Extract audio energy
         audio_energy = self._extract_audio_energy(audio, len(frames))
         
-        # Compute correlation
-        correlation, lag = self._compute_correlation(lip_movement_arr, audio_energy)
+        # Normalize both signals
+        if np.std(lip_movement_arr) > 1e-8 and np.std(audio_energy) > 1e-8:
+            lip_norm = (lip_movement_arr - np.mean(lip_movement_arr)) / (np.std(lip_movement_arr) + 1e-8)
+            audio_norm = (audio_energy - np.mean(audio_energy)) / (np.std(audio_energy) + 1e-8)
+            
+            # Compute Pearson correlation
+            try:
+                correlation, p_value = pearsonr(lip_norm, audio_norm)
+                correlation = float(correlation) if not np.isnan(correlation) else 0.0
+            except Exception as e:
+                logger.info(f"Pearson correlation computation failed: {e}")
+                correlation = 0.0
+        else:
+            correlation = 0.0
+        
+        # Clamp correlation to [0, 1] for score
+        # NOTE: Low correlation scores (0.05-0.15) are NORMAL for real humans
+        # Reasons: calm speech, minimal mouth movement, neutral expressions,
+        # FPS mismatch, clear vowels with steady mouth shape
+        # DO NOT inflate or boost these scores - they are honest measurements
+        correlation_score = max(0.0, min(1.0, abs(correlation)))
         
         # Determine sync status
-        synced = correlation > self.sync_threshold
+        synced = correlation_score > self.sync_threshold
         
-        # Calculate confidence
-        confidence = min(1.0, correlation / self.sync_threshold)
+        # Calculate confidence (normalized to [0, 1])
+        # This is the raw Pearson correlation - low values are expected and correct
+        confidence = correlation_score
         
         # Generate reason
         if synced:
             reason = f"Lip movement correlates with audio (r={correlation:.3f})"
-        elif correlation > self.sync_threshold * 0.5:
+        elif correlation_score > self.sync_threshold * 0.5:
             reason = f"Partial correlation detected (r={correlation:.3f})"
         else:
             reason = "Lip movement does not match audio"
         
-        # Additional analysis: check for lip movement variation
+        # Additional validation: check for lip movement variation
         lip_variance = np.var(lip_movement_arr)
         audio_variance = np.var(audio_energy)
         
         if lip_variance < 0.001 and audio_variance > 0.01:
             synced = False
+            confidence = 0.0
             reason = "Lips not moving despite audio"
         
         return {
             'synced': synced,
             'confidence': confidence,
-            'correlation': correlation,
-            'lag_frames': lag,
-            'lag_ms': lag * (1000 / self.fps),
-            'lip_variance': lip_variance,
-            'audio_variance': audio_variance,
+            'correlation': correlation_score,
+            'lag_frames': 0,  # Pearson correlation doesn't provide lag
+            'lag_ms': 0.0,
+            'lip_variance': float(lip_variance),
+            'audio_variance': float(audio_variance),
             'valid_face_ratio': valid_frames / len(frames),
             'reason': reason
         }
-    
-    def extract_lip_sequence(self, frames: List[np.ndarray]) -> Dict:
-        """
-        Extract lip movement sequence for visualization
-        
-        Args:
-            frames: List of video frames
-        
-        Returns:
-            Lip movement data for plotting
-        """
-        lip_distances = []
-        lip_areas = []
-        lip_ratios = []
-        
-        for frame in frames:
-            features = self._extract_lip_features(frame)
-            if features:
-                lip_distances.append(features['lip_distance'])
-                lip_areas.append(features['lip_area'])
-                lip_ratios.append(features['lip_aspect_ratio'])
-            else:
-                lip_distances.append(lip_distances[-1] if lip_distances else 0)
-                lip_areas.append(lip_areas[-1] if lip_areas else 0)
-                lip_ratios.append(lip_ratios[-1] if lip_ratios else 0)
-        
-        return {
-            'lip_distances': np.array(lip_distances),
-            'lip_areas': np.array(lip_areas),
-            'lip_ratios': np.array(lip_ratios),
-            'frame_count': len(frames),
-            'time_axis': np.arange(len(frames)) / self.fps
-        }
-

@@ -18,6 +18,7 @@ from src.config import DEVICE, MODELS_DIR, AGE_GROUPS, AGE_THRESHOLD
 from src.liveness.face_liveness import FaceLivenessDetector
 from src.liveness.voice_liveness import VoiceLivenessDetector
 from src.liveness.lip_sync import LipSyncVerifier
+from src.liveness.eye_blink import EyeBlinkDetector
 from src.liveness.captcha import CaptchaSession
 
 
@@ -38,8 +39,22 @@ class AgeAuthenticationService:
         # Initialize liveness detectors
         self.face_liveness = FaceLivenessDetector()
         self.voice_liveness = VoiceLivenessDetector()
-        # Temporarily disabled due to MediaPipe 0.10.x migration - LipSyncVerifier uses legacy mp.solutions
-        self.lip_sync = None
+        
+        # Initialize lip-sync verifier
+        try:
+            self.lip_sync = LipSyncVerifier()
+            logger.info("Lip-sync verifier initialized")
+        except Exception as e:
+            logger.info(f"Lip-sync unavailable: {e}")
+            self.lip_sync = None
+        
+        # Initialize eye blink detector
+        try:
+            self.eye_blink = EyeBlinkDetector()
+            logger.info("Eye blink detector initialized")
+        except Exception as e:
+            logger.info(f"Eye blink unavailable: {e}")
+            self.eye_blink = None
         
         # Captcha session manager
         self.captcha_session = CaptchaSession()
@@ -191,27 +206,51 @@ class AgeAuthenticationService:
                 audio, expected_text, sample_rate
             )
         
+        # Eye blink detection
+        eye_blink_score = None
+        faces_detected = face_liveness_result.get('faces_detected', 0)
+        if faces_detected > 0 and frames and len(frames) > 0 and self.eye_blink is not None:
+            try:
+                blink_result = self.eye_blink.detect_blinks(frames)
+                eye_blink_score = blink_result.get('blink_score')
+                if eye_blink_score is not None:
+                    eye_blink_score = self._safe_float(eye_blink_score)
+                    eye_blink_score = max(0.0, min(1.0, eye_blink_score))
+                    logger.info(f"Eye blink liveness score: {eye_blink_score:.2f} ({blink_result.get('blink_count', 0)} blinks)")
+                else:
+                    logger.info("Eye blink unavailable: no face detected in frames")
+            except Exception as e:
+                logger.info(f"Eye blink unavailable: {e}")
+                eye_blink_score = None
+        else:
+            if faces_detected == 0:
+                logger.info("Eye blink skipped: no face detected")
+            elif not frames or len(frames) == 0:
+                logger.info("Eye blink skipped: no video frames available")
+            else:
+                logger.info("Eye blink unavailable (detector not initialized)")
+            eye_blink_score = None
+        
         # Lip sync verification
-        lip_sync_result = {'synced': False, 'confidence': 0, 'reason': 'Lip sync temporarily disabled'}
+        lip_sync_score = None
+        lip_sync_result = {'synced': False, 'confidence': 0, 'reason': 'Lip sync unavailable'}
         if frames and len(frames) > 0 and audio is not None and self.lip_sync is not None:
-            lip_sync_result = self.lip_sync.verify_sync(frames, audio)
+            try:
+                lip_sync_result = self.lip_sync.verify_sync(frames, audio)
+                lip_sync_score = self._safe_float(lip_sync_result.get('confidence', 0))
+                lip_sync_score = max(0.0, min(1.0, lip_sync_score)) if lip_sync_score is not None else None
+            except Exception as e:
+                logger.info(f"Lip-sync unavailable: {e}")
+                lip_sync_score = None
         
         # Age prediction
         age_result = self._predict_age(frames, audio, sample_rate)
         
-        # Demo fallback: If transcription exists and face_age is present, treat captcha as verified
-        transcription = voice_liveness_result.get('transcription', '')
-        face_age_val = age_result.get('face_age')
-        if not voice_liveness_result.get('verified', False) and transcription and face_age_val is not None:
-            logger.warning("Captcha verified via demo fallback (transcription exists + face detected)")
-            voice_liveness_result['verified'] = True
-            voice_liveness_result['confidence'] = max(voice_liveness_result.get('confidence', 0), 0.5)
-            voice_liveness_result['match_score'] = max(voice_liveness_result.get('match_score', 0), 0.5)
+        # No demo fallback - captcha must match strictly
         
         # Combine liveness scores
         face_live_score = face_liveness_result.get('liveness_score', 0)
         voice_live_score = voice_liveness_result.get('confidence', 0)
-        lip_sync_score = lip_sync_result.get('confidence', 0)
         
         # Overall liveness
         is_live = (
@@ -227,20 +266,36 @@ class AgeAuthenticationService:
         reasons.append(lip_sync_result.get('reason', ''))
         reasons = [r for r in reasons if r]  # Remove empty strings
         
-        # Calculate overall confidence (using basic version for backward compatibility)
-        overall_confidence = self._calculate_overall_confidence(
-            face_live_score, voice_live_score, lip_sync_score,
-            age_result.get('confidence', 0), 0.0, 0.0
-        )
-        
-        # Success criteria - relaxed rules
-        # Success if: captcha verified AND (face_age OR voice_age exists)
+        # Calculate overall confidence with updated weights
+        # face_liveness → 0.45, eye_blink → 0.15 (if available), lip_sync → 0.25 (if available), voice_liveness → 0.15 (if available)
+        # NOTE: Low eye_blink (0.4) and lip_sync (0.05-0.15) scores are BY DESIGN and CORRECT
+        # - Eye blink: 1 blink = 0.4 (40%) is expected for short recordings
+        # - Lip-sync: 0.05-0.15 correlation is normal for calm/slow speech
+        # These are CONFIDENCE signals only - they NEVER gate success
+        # DO NOT inflate, boost, or add fallbacks - low scores are honest measurements
+        confidence_components = []
         face_age_val = age_result.get('face_age')
         voice_age_val = age_result.get('voice_age')
+        if face_age_val is not None:
+            confidence_components.append(face_live_score * 0.45)
+        if eye_blink_score is not None and eye_blink_score > 0:
+            confidence_components.append(eye_blink_score * 0.15)
+        if lip_sync_score is not None and lip_sync_score > 0:
+            confidence_components.append(lip_sync_score * 0.25)
+        # Voice liveness (0.15 weight ONLY if voice_age available)
+        if voice_age_val is not None:
+            confidence_components.append(voice_live_score * 0.15)
+        
+        overall_confidence = self._safe_float(sum(confidence_components) if confidence_components else 0.0)
+        # Clamp confidence to [0.0, 1.0] - NO NaN / Inf allowed
+        overall_confidence = max(0.0, min(1.0, overall_confidence))
+        
+        # Success criteria - strict rule
+        # Success if: captcha verified AND face_age IS NOT None
         captcha_verified = voice_liveness_result.get('verified', False)
         success = (
             captcha_verified and
-            (face_age_val is not None or voice_age_val is not None)
+            face_age_val is not None
         )
         
         # Complete captcha session
@@ -255,7 +310,8 @@ class AgeAuthenticationService:
                 'is_live': is_live,
                 'face_liveness_score': face_live_score,
                 'voice_liveness_score': voice_live_score,
-                'lip_sync_score': lip_sync_score,
+                'lip_sync_score': self._safe_float(lip_sync_score) if lip_sync_score is not None else None,
+                'eye_blink_score': self._safe_float(eye_blink_score) if eye_blink_score is not None else None,
                 'captcha_verified': voice_liveness_result.get('verified', False),
                 'reasons': reasons
             },
@@ -277,48 +333,94 @@ class AgeAuthenticationService:
     
     def _predict_age(self, frames: Optional[List[np.ndarray]], 
                      audio: Optional[np.ndarray], sample_rate: int) -> Dict:
-        """Predict age from face and/or voice"""
+        """
+        Predict APPARENT age from face and/or voice with temporal smoothing
+        
+        NOTE: The model predicts APPARENT age (how old someone looks), not chronological age.
+        Underestimation for ages above ~35 is expected due to:
+        - Dataset bias
+        - Regression mean collapse
+        - Apparent-age learning
+        
+        This is NOT a bug - it's a feature of apparent-age models.
+        Underestimation is acceptable and safe for age verification purposes.
+        """
         face_age = None
         voice_age = None
         age_probs = None
         
-        # Face age prediction
+        # Face age prediction with temporal smoothing (median over N frames)
         if frames and len(frames) > 0 and self.face_model is not None:
             try:
-                face_result = self.predict_face_age(frames[-1])  # Use last frame
-                if 'error' not in face_result:
-                    face_age = face_result.get('age')
-                    age_probs = face_result.get('age_group_probs')
+                # Collect age predictions over N frames (N = 15-25)
+                N = min(20, len(frames))
+                frame_indices = np.linspace(0, len(frames) - 1, N, dtype=int)
+                age_predictions = []
+                
+                for idx in frame_indices:
+                    try:
+                        face_result = self.predict_face_age(frames[idx])
+                        if 'error' not in face_result:
+                            pred_age = face_result.get('age')
+                            if pred_age is not None and pred_age > 0:
+                                age_predictions.append(pred_age)
+                                if age_probs is None:
+                                    age_probs = face_result.get('age_group_probs')
+                    except Exception:
+                        continue  # Skip failed predictions
+                
+                if age_predictions:
+                    # Use median (NOT mean) for stability
+                    median_age = float(np.median(age_predictions))
+                    # Clamp to ±3 years max deviation from median
+                    age_std = np.std(age_predictions)
+                    if age_std > 3.0:
+                        # Filter outliers beyond ±3 years
+                        filtered_ages = [a for a in age_predictions if abs(a - median_age) <= 3.0]
+                        if filtered_ages:
+                            face_age = float(np.median(filtered_ages))
+                        else:
+                            face_age = median_age
+                    else:
+                        face_age = median_age
+                    
+                    # NOTE: face_age is APPARENT age (how old someone looks), not chronological age
+                    # Underestimation for ages above ~35 is expected and acceptable
+                    # This is NOT a bug - it's a feature of apparent-age models
                 else:
                     face_age = None
                     age_probs = None
             except Exception as e:
-                logger.warning(f"Face age prediction failed: {e}")
+                logger.info(f"Face age prediction failed: {e}")
                 face_age = None
                 age_probs = None
         
-        # Voice age prediction
+        # Voice age prediction - skip if audio < 3 seconds
         if audio is not None and self.voice_model is not None:
-            try:
-                voice_result = self.predict_voice_age(audio, sample_rate)
-                if 'error' not in voice_result:
-                    voice_age = voice_result.get('age')
-                    if age_probs is None:
-                        age_probs = voice_result.get('age_group_probs')
-                else:
-                    voice_age = None
-            except Exception as e:
-                logger.warning(f"Voice age prediction failed: {e}")
+            audio_duration = len(audio) / sample_rate if sample_rate > 0 else 0
+            if audio_duration < 3.0:
+                logger.info(f"Voice age skipped: audio too short ({audio_duration:.1f}s < 3s)")
                 voice_age = None
+            else:
+                try:
+                    voice_result = self.predict_voice_age(audio, sample_rate)
+                    if 'error' not in voice_result:
+                        voice_age = voice_result.get('age')
+                        if age_probs is None:
+                            age_probs = voice_result.get('age_group_probs')
+                    else:
+                        voice_age = None
+                except Exception as e:
+                    logger.info(f"Voice age prediction failed (non-critical): {e}")
+                    voice_age = None
         
-        # Fuse predictions
-        if face_age is not None and voice_age is not None:
-            # Weighted average (face usually more reliable)
-            final_age = 0.6 * face_age + 0.4 * voice_age
-        elif face_age is not None:
-            final_age = face_age
+        # Fuse predictions - use face_age if available, voice_age only for confidence
+        # NOTE: final_age represents APPARENT age (how old someone looks), not chronological age
+        # Underestimation for ages above ~35 is expected and acceptable for age verification purposes
+        if face_age is not None:
+            final_age = face_age  # Use face age as primary
         elif voice_age is not None:
-            final_age = voice_age
+            final_age = voice_age  # Fallback to voice if face unavailable
         else:
             final_age = 0
         
@@ -552,11 +654,11 @@ class AgeAuthenticationService:
                         if 'error' not in face_result:
                             face_age = self._safe_float(face_result.get('age'))
                 except Exception as e:
-                    logger.warning(f"Face age prediction failed: {e}")
+                    logger.info(f"Face age prediction failed: {e}")
             else:
-                logger.warning("No faces detected in frames")
+                logger.info("No faces detected in frames")
         except Exception as e:
-            logger.warning(f"Face analysis failed: {e}")
+            logger.info(f"Face analysis failed: {e}")
         
         # 2. Voice processing
         voice_liveness_score = 0.0
@@ -573,11 +675,7 @@ class AgeAuthenticationService:
                 captcha_verified = voice_liveness_result.get('verified', False)
                 transcription = voice_liveness_result.get('transcription', '')
                 
-                # Demo fallback: If transcription exists and face_age is present, treat as verified
-                if not captcha_verified and transcription and face_age is not None:
-                    logger.warning("Captcha verified via demo fallback (transcription exists + face detected)")
-                    captcha_verified = True
-                    voice_liveness_score = max(voice_liveness_score, 0.5)  # Give minimum confidence
+                # No demo fallback - captcha must match strictly
                 
                 # Voice age prediction (optional - don't fail if unavailable)
                 if transcription and self.voice_model is not None:
@@ -586,30 +684,68 @@ class AgeAuthenticationService:
                         if 'error' not in voice_result:
                             voice_age = self._safe_float(voice_result.get('age'))
                         else:
-                            logger.debug("Voice age prediction returned error, continuing without voice age")
+                            logger.info("Voice age prediction returned error, continuing without voice age")
                     except Exception as e:
-                        logger.warning(f"Voice age prediction failed (non-critical): {e}")
+                        logger.info(f"Voice age prediction failed (non-critical): {e}")
                         # Don't set voice_age, keep it None
                 else:
                     if not transcription:
-                        logger.debug("Empty transcription, skipping voice age prediction")
+                        logger.info("Empty transcription, skipping voice age prediction")
                     elif self.voice_model is None:
-                        logger.debug("Voice model not available, skipping voice age prediction")
+                        logger.info("Voice model not available, skipping voice age prediction")
             except Exception as e:
-                logger.warning(f"Voice processing failed: {e}")
+                logger.info(f"Voice processing failed: {e}")
         else:
-            logger.warning("No audio data provided")
+            logger.info("No audio data provided")
         
-        # 3. Lip sync (only if face and audio available)
-        lip_sync_score = 0.0
-        if faces_detected > 0 and len(audio) > 0 and self.lip_sync is not None:
+        # 3. Eye blink liveness - run ONLY when: face detected AND video frames available
+        eye_blink_score = None
+        if faces_detected > 0 and len(frames) > 0 and self.eye_blink is not None:
+            try:
+                blink_result = self.eye_blink.detect_blinks(frames)
+                eye_blink_score = blink_result.get('blink_score')
+                if eye_blink_score is not None:
+                    eye_blink_score = self._safe_float(eye_blink_score)
+                    # Clamp to [0.0, 1.0]
+                    eye_blink_score = max(0.0, min(1.0, eye_blink_score))
+                    logger.info(f"Eye blink liveness score: {eye_blink_score:.2f} ({blink_result.get('blink_count', 0)} blinks)")
+                else:
+                    logger.info("Eye blink unavailable: no face detected in frames")
+            except Exception as e:
+                logger.info(f"Eye blink unavailable: {e}")
+                eye_blink_score = None
+        else:
+            if faces_detected == 0:
+                logger.info("Eye blink skipped: no face detected")
+            elif len(frames) == 0:
+                logger.info("Eye blink skipped: no video frames available")
+            else:
+                logger.info("Eye blink unavailable (detector not initialized)")
+            eye_blink_score = None
+        
+        # 4. Lip sync liveness - run ONLY when: face detected AND audio duration >= 3 seconds
+        lip_sync_score = None
+        audio_duration = len(audio) / sample_rate if sample_rate > 0 else 0
+        if faces_detected > 0 and audio_duration >= 3.0 and self.lip_sync is not None:
             try:
                 lip_sync_result = self.lip_sync.verify_sync(frames, audio)
                 lip_sync_score = self._safe_float(lip_sync_result.get('confidence', 0))
+                # Clamp to [0.0, 1.0]
+                lip_sync_score = max(0.0, min(1.0, lip_sync_score))
+                logger.info(f"Lip-sync liveness score: {lip_sync_score:.2f}")
             except Exception as e:
-                logger.warning(f"Lip sync failed: {e}")
+                logger.info(f"Lip-sync unavailable: {e}")
+                lip_sync_score = None
+        else:
+            if audio_duration < 3.0:
+                logger.info(f"Lip-sync skipped: audio too short ({audio_duration:.1f}s < 3s)")
+            elif faces_detected == 0:
+                logger.info("Lip-sync skipped: no face detected")
+            else:
+                logger.info("Lip-sync unavailable (verifier not initialized)")
+            lip_sync_score = None
         
-        # 4. Age fusion
+        # 6. Age fusion
         if face_age is not None and voice_age is not None:
             estimated_age = self._safe_float(0.6 * face_age + 0.4 * voice_age)
         elif face_age is not None:
@@ -623,30 +759,42 @@ class AgeAuthenticationService:
         if estimated_age is not None:
             is_adult = estimated_age >= AGE_THRESHOLD
         
-        # 5. Calculate confidence (adjusted for optional voice)
-        # Base confidence from available sources
+        # 7. Calculate confidence with updated weights
+        # face_liveness → 0.45, eye_blink → 0.15 (if available), lip_sync → 0.25 (if available), voice_liveness → 0.15 (if available)
+        # NOTE: Low eye_blink (0.4) and lip_sync (0.05-0.15) scores are BY DESIGN and CORRECT
+        # - Eye blink: 1 blink = 0.4 (40%) is expected for short recordings
+        # - Lip-sync: 0.05-0.15 correlation is normal for calm/slow speech
+        # These are CONFIDENCE signals only - they NEVER gate success
+        # DO NOT inflate, boost, or add fallbacks - low scores are honest measurements
         confidence_components = []
+        
+        # Face liveness (primary, 0.45 weight)
         if face_age is not None:
-            confidence_components.append(face_liveness_score * 0.4)
+            confidence_components.append(face_liveness_score * 0.45)
+        
+        # Eye blink (0.15 weight if available)
+        # Accepts low scores (0.4 for 1 blink) - this is CORRECT behavior
+        if eye_blink_score is not None and eye_blink_score > 0:
+            confidence_components.append(eye_blink_score * 0.15)
+        
+        # Lip-sync (0.25 weight if available)
+        # Accepts low scores (0.05-0.15) - this is NORMAL for real humans
+        if lip_sync_score is not None and lip_sync_score > 0:
+            confidence_components.append(lip_sync_score * 0.25)
+        
+        # Voice liveness (0.15 weight ONLY if voice_age available)
         if voice_age is not None:
-            confidence_components.append(voice_liveness_score * 0.4)
-        elif captcha_verified:
-            # If captcha verified but no voice age, still give some confidence
-            confidence_components.append(voice_liveness_score * 0.2)
-        
-        if lip_sync_score > 0:
-            confidence_components.append(lip_sync_score * 0.1)
-        
-        if estimated_age is not None:
-            confidence_components.append(0.2)
+            confidence_components.append(voice_liveness_score * 0.15)
         
         confidence = self._safe_float(sum(confidence_components) if confidence_components else 0.0)
+        # Clamp confidence to [0.0, 1.0] - NO NaN / Inf allowed
+        confidence = max(0.0, min(1.0, confidence))
         
-        # 6. Success determination - relaxed rules
-        # Success if: captcha verified AND (face_age OR voice_age exists)
+        # 8. Success determination - strict rule
+        # Success if: captcha verified AND face_age IS NOT None
         success = (
             captcha_verified and
-            (face_age is not None or voice_age is not None)
+            face_age is not None
         )
         
         # 7. Build response with sanitized values
@@ -662,7 +810,8 @@ class AgeAuthenticationService:
                 'head_movement': head_movement_detected,
                 'captcha_verified': captcha_verified,
                 'voice_liveness': max(0.0, min(1.0, voice_liveness_score)),  # Clamp to [0, 1]
-                'lip_sync': max(0.0, min(1.0, lip_sync_score))  # Clamp to [0, 1]
+                'lip_sync': self._safe_float(lip_sync_score) if lip_sync_score is not None else None, # Return null if unavailable
+                'eye_blink': self._safe_float(eye_blink_score) if eye_blink_score is not None else None # Return null if unavailable
             },
             'message': 'Verification successful' if success else 'Verification failed'
         }
@@ -710,7 +859,7 @@ class AgeAuthenticationService:
             
             # Guard: Check if no faces detected
             if face_liveness_result.get('faces_detected', 0) == 0 or len(face_crops) == 0:
-                logger.warning("No faces detected in frames")
+                logger.info("No faces detected in frames")
                 face_liveness_result = {
                     'is_live': False,
                     'liveness_score': 0.0,
@@ -734,7 +883,7 @@ class AgeAuthenticationService:
                 }
                 face_crops = []
         except Exception as e:
-            logger.warning(f"Comprehensive face analysis failed: {e}")
+            logger.info(f"Comprehensive face analysis failed: {e}")
             face_liveness_result = {
                 'is_live': False,
                 'liveness_score': 0.0,
@@ -764,7 +913,7 @@ class AgeAuthenticationService:
                 audio, expected_text, sample_rate
             )
         except Exception as e:
-            logger.warning(f"Voice liveness verification failed: {e}")
+            logger.info(f"Voice liveness verification failed: {e}")
             voice_liveness_result = {
                 'verified': False,
                 'confidence': 0.0,
@@ -774,29 +923,73 @@ class AgeAuthenticationService:
                 'transcription': ''
             }
         
-        # 4. Lip-sync verification (with error handling)
-        if self.lip_sync is not None:
+        # 4. Eye blink detection (with error handling)
+        # Run ONLY when: face detected AND video frames available
+        eye_blink_score = None
+        faces_detected = len(face_crops) if face_crops else 0
+        if faces_detected > 0 and len(frames) > 0 and self.eye_blink is not None:
+            try:
+                blink_result = self.eye_blink.detect_blinks(frames)
+                eye_blink_score = blink_result.get('blink_score')
+                if eye_blink_score is not None:
+                    eye_blink_score = self._safe_float(eye_blink_score)
+                    eye_blink_score = max(0.0, min(1.0, eye_blink_score))
+                    logger.info(f"Eye blink liveness score: {eye_blink_score:.2f} ({blink_result.get('blink_count', 0)} blinks)")
+                else:
+                    logger.info("Eye blink unavailable: no face detected in frames")
+            except Exception as e:
+                logger.info(f"Eye blink unavailable: {e}")
+                eye_blink_score = None
+        else:
+            if faces_detected == 0:
+                logger.info("Eye blink skipped: no face detected")
+            elif len(frames) == 0:
+                logger.info("Eye blink skipped: no video frames available")
+            else:
+                logger.info("Eye blink unavailable (detector not initialized)")
+            eye_blink_score = None
+        
+        # 5. Lip-sync verification (with error handling)
+        # Run ONLY when: face detected AND audio duration >= 3 seconds
+        lip_sync_score = None
+        audio_duration = len(audio) / sample_rate if sample_rate > 0 else 0
+        
+        if faces_detected > 0 and audio_duration >= 3.0 and self.lip_sync is not None:
             try:
                 lip_sync_result = self.lip_sync.verify_sync(frames, audio)
+                lip_sync_score = self._safe_float(lip_sync_result.get('confidence', 0))
+                # Clamp to [0.0, 1.0]
+                lip_sync_score = max(0.0, min(1.0, lip_sync_score))
+                logger.info(f"Lip-sync liveness score: {lip_sync_score:.2f}")
             except Exception as e:
-                logger.warning(f"Lip-sync verification failed: {e}")
+                logger.info(f"Lip-sync unavailable: {e}")
                 lip_sync_result = {
                     'synced': False,
                     'confidence': 0.0,
+                    'sync_score': 0.0,
                     'reason': f"Lip-sync error: {str(e)}"
                 }
+                lip_sync_score = None
         else:
+            if audio_duration < 3.0:
+                logger.info(f"Lip-sync skipped: audio too short ({audio_duration:.1f}s < 3s)")
+            elif faces_detected == 0:
+                logger.info("Lip-sync skipped: no face detected")
+            else:
+                logger.info("Lip-sync unavailable (verifier not initialized)")
             lip_sync_result = {
                 'synced': False,
                 'confidence': 0.0,
-                'reason': 'Lip sync temporarily disabled due to MediaPipe migration'
+                'sync_score': 0.0,
+                'reason': 'Lip sync unavailable'
             }
+            lip_sync_score = None
         
         # 5. Age prediction (with error handling)
         try:
             age_result = self._predict_age(frames, audio, sample_rate)
         except Exception as e:
-            logger.warning(f"Age prediction failed: {e}")
+            logger.info(f"Age prediction failed: {e}")
             age_result = {
                 'age': 0,
                 'face_age': None,
@@ -808,14 +1001,7 @@ class AgeAuthenticationService:
                 'confidence': 0.0
             }
         
-        # Demo fallback: If transcription exists and face_age is present, treat captcha as verified
-        transcription = voice_liveness_result.get('transcription', '')
-        face_age_val = age_result.get('face_age')
-        if not voice_liveness_result.get('verified', False) and transcription and face_age_val is not None:
-            logger.warning("Captcha verified via demo fallback (transcription exists + face detected)")
-            voice_liveness_result['verified'] = True
-            voice_liveness_result['confidence'] = max(voice_liveness_result.get('confidence', 0), 0.5)
-            voice_liveness_result['match_score'] = max(voice_liveness_result.get('match_score', 0), 0.5)
+        # No demo fallback - captcha must match strictly
         
         # 6. Calculate detailed metrics (using cached face crops)
         face_detection_details = {
@@ -850,15 +1036,15 @@ class AgeAuthenticationService:
         }
         
         lip_sync_analysis = {
-            'sync_score': lip_sync_result.get('confidence', 0),
-            'temporal_alignment': lip_sync_result.get('temporal_alignment', 0) if 'temporal_alignment' in lip_sync_result else lip_sync_result.get('confidence', 0),
-            'phoneme_match': lip_sync_result.get('phoneme_match', 0) if 'phoneme_match' in lip_sync_result else lip_sync_result.get('confidence', 0)
+            'sync_score': self._safe_float(lip_sync_score) if lip_sync_score is not None else None,
+            'temporal_alignment': self._safe_float(lip_sync_result.get('lag_ms', 0)) if 'lag_ms' in lip_sync_result else 0.0,
+            'phoneme_match': self._safe_float(lip_sync_result.get('correlation', 0)) if 'correlation' in lip_sync_result else 0.0
         }
         
         # 7. Combine all liveness scores
         face_live_score = face_liveness_result.get('liveness_score', 0)
         voice_live_score = voice_liveness_result.get('confidence', 0)
-        lip_sync_score = lip_sync_result.get('confidence', 0)
+        # Use lip_sync_score from above (already clamped and logged)
         
         # Overall liveness determination (more lenient - at least 2 checks should pass)
         liveness_checks = [
@@ -872,23 +1058,45 @@ class AgeAuthenticationService:
         # Require at least 2 out of 4 checks to pass (more lenient for testing)
         is_live = passed_checks >= 2
         
-        # 8. Calculate overall confidence
-        overall_confidence = self._calculate_overall_confidence(
-            face_live_score,
-            voice_live_score,
-            lip_sync_score,
-            age_result.get('confidence', 0),
-            blink_info.get('blink_score', 0),
-            head_movement.get('motion_score', 0)
-        )
-        
-        # 9. Success criteria - relaxed rules
-        # Success if: captcha verified AND (face_age OR voice_age exists)
+        # 9. Calculate overall confidence with updated weights
+        # face_liveness → 0.45, eye_blink → 0.15 (if available), lip_sync → 0.25 (if available), voice_liveness → 0.15 (if available)
+        # NOTE: Low eye_blink (0.4) and lip_sync (0.05-0.15) scores are BY DESIGN and CORRECT
+        # - Eye blink: 1 blink = 0.4 (40%) is expected for short recordings
+        # - Lip-sync: 0.05-0.15 correlation is normal for calm/slow speech
+        # These are CONFIDENCE signals only - they NEVER gate success
+        # DO NOT inflate, boost, or add fallbacks - low scores are honest measurements
+        confidence_components = []
         face_age_val = age_result.get('face_age')
         voice_age_val = age_result.get('voice_age')
+        
+        # Face liveness (primary, 0.45 weight)
+        if face_age_val is not None:
+            confidence_components.append(face_live_score * 0.45)
+        
+        # Eye blink (0.15 weight if available)
+        # Accepts low scores (0.4 for 1 blink) - this is CORRECT behavior
+        if eye_blink_score is not None and eye_blink_score > 0:
+            confidence_components.append(eye_blink_score * 0.15)
+        
+        # Lip-sync (0.25 weight if available)
+        # Accepts low scores (0.05-0.15) - this is NORMAL for real humans
+        if lip_sync_score is not None and lip_sync_score > 0:
+            confidence_components.append(lip_sync_score * 0.25)
+        
+        # Voice liveness (0.15 weight ONLY if voice_age available)
+        if voice_age_val is not None:
+            confidence_components.append(voice_live_score * 0.15)
+        
+        overall_confidence = self._safe_float(sum(confidence_components) if confidence_components else 0.0)
+        # Clamp confidence to [0.0, 1.0] - NO NaN / Inf allowed
+        overall_confidence = max(0.0, min(1.0, overall_confidence))
+        
+        # 9. Success criteria - strict rule
+        # Success if: captcha verified AND face_age IS NOT None
+        captcha_verified = voice_liveness_result.get('verified', False)
         success = (
-            voice_liveness_result.get('verified', False) and
-            (face_age_val is not None or voice_age_val is not None)
+            captcha_verified and
+            face_age_val is not None
         )
         
         # 10. Complete captcha session
@@ -905,7 +1113,8 @@ class AgeAuthenticationService:
                 'is_live': is_live,
                 'face_liveness_score': self._safe_float(face_live_score),
                 'voice_liveness_score': self._safe_float(voice_live_score),
-                'lip_sync_score': self._safe_float(lip_sync_score),
+                'lip_sync_score': self._safe_float(lip_sync_score) if lip_sync_score is not None else None,
+                'eye_blink_score': self._safe_float(eye_blink_score) if eye_blink_score is not None else None,
                 'blink_detected': blink_info.get('blink_count', 0) > 0,
                 'blink_count': int(blink_info.get('blink_count', 0)),
                 'head_movement_detected': head_movement.get('motion_detected', False),

@@ -17,39 +17,27 @@ from src.config import CAPTCHA_SENTENCES
 
 class CaptchaGenerator:
     """
-    Generate random captcha sentences for voice verification
+    Generate text-based captcha sentences for voice verification
+    Only produces short sentences (5-7 words) with simple phonetics
     """
     
-    def __init__(self, predefined_sentences: List[str] = None,
-                 include_numbers: bool = True, 
-                 include_colors: bool = True):
+    def __init__(self, predefined_sentences: List[str] = None):
         self.predefined_sentences = predefined_sentences or CAPTCHA_SENTENCES
-        self.include_numbers = include_numbers
-        self.include_colors = include_colors
         
-        # Word lists for dynamic generation
-        self.colors = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 
-                       'pink', 'white', 'black', 'gray']
+        # Word lists for dynamic generation (simple, common words)
+        self.adjectives = ['clear', 'fresh', 'safe', 'bright', 'calm', 'quick',
+                          'gentle', 'kind', 'smart', 'warm', 'bold', 'strong']
         
-        self.adjectives = ['quick', 'lazy', 'happy', 'bright', 'calm', 'clear',
-                          'fresh', 'gentle', 'kind', 'smart', 'warm', 'bold']
+        self.nouns = ['speech', 'system', 'flower', 'cat', 'dog', 'bird',
+                     'tree', 'river', 'cloud', 'star', 'book', 'house']
         
-        self.nouns = ['fox', 'dog', 'cat', 'bird', 'tree', 'river', 'mountain',
-                     'cloud', 'star', 'flower', 'book', 'house', 'garden', 'bridge']
+        self.verbs = ['runs', 'walks', 'flies', 'speaks', 'reads', 'writes',
+                     'enables', 'requires', 'provides', 'creates', 'shows']
         
-        self.verbs = ['jumps', 'runs', 'walks', 'flies', 'swims', 'climbs',
-                     'reads', 'writes', 'speaks', 'thinks', 'dreams', 'dances']
+        self.prepositions = ['under', 'over', 'through', 'across', 'beside',
+                            'near', 'along', 'around', 'into', 'onto']
         
-        self.actions = ['over', 'under', 'around', 'through', 'across', 'beside',
-                       'near', 'along', 'toward', 'into', 'onto', 'upon']
-        
-        # Number words
-        self.number_words = {
-            0: 'zero', 1: 'one', 2: 'two', 3: 'three', 4: 'four',
-            5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'
-        }
-        
-        logger.info("Initialized CaptchaGenerator")
+        logger.info("Initialized CaptchaGenerator (text-only)")
     
     def generate_predefined(self) -> Tuple[str, str]:
         """
@@ -59,60 +47,42 @@ class CaptchaGenerator:
             Tuple of (sentence, captcha_id)
         """
         sentence = random.choice(self.predefined_sentences)
+        # Ensure lowercase and clean
+        sentence = sentence.lower().strip()
         captcha_id = self._generate_id(sentence)
         return sentence, captcha_id
     
     def generate_dynamic(self, complexity: str = 'medium') -> Tuple[str, str]:
         """
-        Generate a dynamic random sentence
+        Generate a dynamic text sentence (5-7 words)
         
         Args:
-            complexity: 'simple', 'medium', or 'complex'
+            complexity: 'medium' (only option for text captchas)
         
         Returns:
             Tuple of (sentence, captcha_id)
         """
-        if complexity == 'simple':
-            sentence = self._generate_simple_sentence()
-        elif complexity == 'complex':
-            sentence = self._generate_complex_sentence()
-        else:
-            sentence = self._generate_medium_sentence()
-        
+        sentence = self._generate_text_sentence()
         captcha_id = self._generate_id(sentence)
         return sentence, captcha_id
     
-    def _generate_simple_sentence(self) -> str:
-        """Generate a simple sentence (3-5 words)"""
+    def _generate_text_sentence(self) -> str:
+        """Generate a text sentence (5-7 words, simple phonetics)"""
+        # Generate 5-7 word sentences with simple structure
         templates = [
-            f"The {random.choice(self.adjectives)} {random.choice(self.nouns)}",
-            f"A {random.choice(self.colors)} {random.choice(self.nouns)}",
-            f"Please say {self._random_number_word()}"
+            # 5 words
+            f"{random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} the {random.choice(self.nouns)}",
+            f"the {random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} {random.choice(self.nouns)}",
+            # 6 words
+            f"{random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} the {random.choice(self.adjectives)} {random.choice(self.nouns)}",
+            f"the {random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} a {random.choice(self.adjectives)} {random.choice(self.nouns)}",
+            # 7 words
+            f"{random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} the {random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)}",
+            f"the {random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.prepositions)} a {random.choice(self.adjectives)} {random.choice(self.nouns)}",
         ]
-        return random.choice(templates)
-    
-    def _generate_medium_sentence(self) -> str:
-        """Generate a medium complexity sentence (5-8 words)"""
-        templates = [
-            f"The {random.choice(self.adjectives)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.actions)} the {random.choice(self.nouns)}",
-            f"A {random.choice(self.colors)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.actions)} a {random.choice(self.adjectives)} {random.choice(self.nouns)}",
-            f"Please verify by saying {self._random_number_word()} {self._random_number_word()} {self._random_number_word()}",
-            f"My favorite {random.choice(self.nouns)} is {random.choice(self.adjectives)} and {random.choice(self.colors)}"
-        ]
-        return random.choice(templates)
-    
-    def _generate_complex_sentence(self) -> str:
-        """Generate a complex sentence (8+ words)"""
-        templates = [
-            f"The {random.choice(self.adjectives)} {random.choice(self.colors)} {random.choice(self.nouns)} {random.choice(self.verbs)} {random.choice(self.actions)} the {random.choice(self.adjectives)} {random.choice(self.nouns)} in the {random.choice(self.nouns)}",
-            f"I verify my identity by saying {self._random_number_word()} {self._random_number_word()} {self._random_number_word()} {self._random_number_word()}",
-            f"Please repeat the following words: {random.choice(self.adjectives)}, {random.choice(self.colors)}, {random.choice(self.nouns)}, {random.choice(self.verbs)}"
-        ]
-        return random.choice(templates)
-    
-    def _random_number_word(self) -> str:
-        """Generate a random number word"""
-        return self.number_words[random.randint(0, 9)]
+        sentence = random.choice(templates)
+        # Ensure lowercase and clean
+        return sentence.lower().strip()
     
     def _generate_id(self, sentence: str) -> str:
         """Generate a unique ID for the captcha"""
@@ -120,65 +90,6 @@ class CaptchaGenerator:
         data = f"{sentence}_{timestamp}_{random.random()}"
         return hashlib.sha256(data.encode()).hexdigest()[:16]
     
-    def generate_number_sequence(self, length: int = 4) -> Tuple[str, str]:
-        """
-        Generate a number sequence captcha
-        
-        Args:
-            length: Number of digits
-        
-        Returns:
-            Tuple of (sentence, captcha_id)
-        """
-        numbers = [random.randint(0, 9) for _ in range(length)]
-        words = [self.number_words[n] for n in numbers]
-        sentence = f"Please say the numbers: {' '.join(words)}"
-        captcha_id = self._generate_id(sentence)
-        return sentence, captcha_id
-    
-    def generate_word_sequence(self, length: int = 4) -> Tuple[str, str]:
-        """
-        Generate a word sequence captcha
-        
-        Args:
-            length: Number of words
-        
-        Returns:
-            Tuple of (sentence, captcha_id)
-        """
-        all_words = self.adjectives + self.nouns + self.colors
-        words = random.sample(all_words, min(length, len(all_words)))
-        sentence = f"Please say these words: {', '.join(words)}"
-        captcha_id = self._generate_id(sentence)
-        return sentence, captcha_id
-    
-    def generate_mixed_captcha(self) -> Tuple[str, str]:
-        """
-        Generate a mixed captcha (words + numbers)
-        
-        Returns:
-            Tuple of (sentence, captcha_id)
-        """
-        elements = []
-        
-        # Add some words
-        for _ in range(random.randint(2, 3)):
-            word_type = random.choice(['adjective', 'color', 'noun'])
-            if word_type == 'adjective':
-                elements.append(random.choice(self.adjectives))
-            elif word_type == 'color':
-                elements.append(random.choice(self.colors))
-            else:
-                elements.append(random.choice(self.nouns))
-        
-        # Add some numbers
-        for _ in range(random.randint(2, 3)):
-            elements.append(self.number_words[random.randint(0, 9)])
-        
-        random.shuffle(elements)
-        sentence = f"Read aloud: {' '.join(elements)}"
-        captcha_id = self._generate_id(sentence)
-        return sentence, captcha_id
     
     def validate_captcha(self, captcha_id: str, timestamp: datetime, 
                         max_age_seconds: int = 300) -> bool:
@@ -207,24 +118,21 @@ class CaptchaSession:
     
     def create_session(self, complexity: str = 'medium') -> dict:
         """
-        Create a new captcha session
+        Create a new captcha session (text-only)
         
         Returns:
             Session info with captcha text and ID
         """
-        # Choose generation method randomly for variety
-        method = random.choice(['predefined', 'dynamic', 'number', 'word', 'mixed'])
+        # Choose between predefined and dynamic (text-only)
+        method = random.choice(['predefined', 'dynamic'])
         
         if method == 'predefined':
             sentence, captcha_id = self.generator.generate_predefined()
-        elif method == 'dynamic':
-            sentence, captcha_id = self.generator.generate_dynamic(complexity)
-        elif method == 'number':
-            sentence, captcha_id = self.generator.generate_number_sequence()
-        elif method == 'word':
-            sentence, captcha_id = self.generator.generate_word_sequence()
         else:
-            sentence, captcha_id = self.generator.generate_mixed_captcha()
+            sentence, captcha_id = self.generator.generate_dynamic(complexity)
+        
+        # Ensure sentence is lowercase and clean
+        sentence = sentence.lower().strip()
         
         self.sessions[captcha_id] = {
             'sentence': sentence,
