@@ -31,7 +31,7 @@ const state = {
     captchaSentence: null,
     captchaExpiry: null,
     captchaTimer: null,
-    uiState: 'idle', // idle, recording, processing, success, failed
+    uiState: 'idle', // idle, camera_ready, recording, processing, success, failed
     MIN_RECORDING_DURATION: 5 // seconds
 };
 
@@ -40,7 +40,8 @@ const state = {
 // =====================
 
 const elements = {
-    videoPreview: document.getElementById('videoPreview'),
+    videoBlur: document.getElementById('videoBlur'),
+    videoSharp: document.getElementById('videoSharp'),
     videoStatus: document.getElementById('videoStatus'),
     btnStart: document.getElementById('btnStart'),
     btnStop: document.getElementById('btnStop'),
@@ -65,8 +66,10 @@ const elements = {
     faceLivenessValue: document.getElementById('faceLivenessValue'),
     voiceLivenessBar: document.getElementById('voiceLivenessBar'),
     voiceLivenessValue: document.getElementById('voiceLivenessValue'),
-    lipSyncBar: document.getElementById('lipSyncBar'),
-    lipSyncValue: document.getElementById('lipSyncValue'),
+        lipSyncBar: document.getElementById('lipSyncBar'),
+        lipSyncValue: document.getElementById('lipSyncValue'),
+        eyeBlinkBar: document.getElementById('eyeBlinkBar'),
+        eyeBlinkValue: document.getElementById('eyeBlinkValue'),
     errorMessage: document.getElementById('errorMessage'),
     btnRestart: document.getElementById('btnRestart')
 };
@@ -99,45 +102,88 @@ async function initializeApp() {
 // =====================
 
 async function initializeMedia() {
+    // 1. Validate video elements exist BEFORE any operations
+    if (!elements.videoBlur || !elements.videoSharp) {
+        const error = new Error('Video elements not found in DOM');
+        console.error('Video elements not found:', {
+            videoBlur: !!elements.videoBlur,
+            videoSharp: !!elements.videoSharp
+        });
+        throw error;
+    }
+    
     try {
-        // Request video and audio streams separately
-        state.videoStream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                facingMode: 'user'
-            }
+        // 3. Call getUserMedia ONLY once with simplified constraints
+        state.mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user' },
+            audio: true
         });
         
-        state.audioStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            }
-        });
-        
-        // Combine for preview
-        const videoTrack = state.videoStream.getVideoTracks()[0];
-        const audioTrack = state.audioStream.getAudioTracks()[0];
-        state.mediaStream = new MediaStream([videoTrack, audioTrack]);
-        
-        // Set video preview
-        elements.videoPreview.srcObject = state.mediaStream;
-        
-        // Update status
-        updateVideoStatus('Camera Ready', 'ready');
-        
-        console.log('Media initialized successfully');
-    } catch (error) {
-        console.error('Error accessing media:', error);
-        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
-            alert('Camera and microphone access is required. Please grant permissions and refresh the page.');
-        } else if (error.name === 'NotFoundError') {
-            alert('No camera or microphone found. Please connect a device and refresh.');
-        } else {
-            alert('Unable to access camera/microphone. Please check your device settings.');
+        // Verify stream has tracks
+        if (!state.mediaStream || state.mediaStream.getVideoTracks().length === 0) {
+            throw new Error('No video tracks in stream');
         }
+        
+        // 5. Split tracks ONLY for recording (not for preview)
+        state.videoStream = new MediaStream(state.mediaStream.getVideoTracks());
+        state.audioStream = new MediaStream(state.mediaStream.getAudioTracks());
+        
+        // 2. Force autoplay compatibility - set properties BEFORE play()
+        elements.videoBlur.muted = true;
+        elements.videoSharp.muted = true;
+        elements.videoBlur.playsInline = true;
+        elements.videoSharp.playsInline = true;
+        elements.videoBlur.autoplay = true;
+        elements.videoSharp.autoplay = true;
+        
+        // 4. Assign the SAME stream to BOTH video elements
+        elements.videoBlur.srcObject = state.mediaStream;
+        elements.videoSharp.srcObject = state.mediaStream;
+        
+        // 4. Call play safely - never block UI if it fails
+        await Promise.all([
+            elements.videoBlur.play().catch((err) => {
+                console.warn('videoBlur.play() failed (autoplay policy):', err);
+            }),
+            elements.videoSharp.play().catch((err) => {
+                console.warn('videoSharp.play() failed (autoplay policy):', err);
+            })
+        ]);
+        
+        // 7. Only update status if stream exists and has video tracks
+        if (state.mediaStream && state.mediaStream.getVideoTracks().length > 0) {
+            // 1. Mark camera as ready
+            state.uiState = 'camera_ready';
+            updateVideoStatus('Camera Ready', 'ready');
+            updateUIState();
+            console.log('Media initialized successfully', {
+                videoTracks: state.mediaStream.getVideoTracks().length,
+                audioTracks: state.mediaStream.getAudioTracks().length
+            });
+        }
+    } catch (error) {
+        // 6. Improved error diagnostics - NO generic errors
+        console.error('Camera init failed:', error.name, error.message, error);
+        
+        // 7. Do NOT show error if stream exists and has video tracks
+        if (state.mediaStream && state.mediaStream.getVideoTracks().length > 0) {
+            console.log('Stream exists, ignoring play() error');
+            return; // Stream is valid, just autoplay failed
+        }
+        
+        // Map specific errors
+        let errorMessage;
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+            errorMessage = 'Permission denied. Please grant camera and microphone access.';
+        } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
+            errorMessage = 'Camera is already in use by another application.';
+        } else if (error.name === 'OverconstrainedError') {
+            errorMessage = 'Camera constraints not supported by your device.';
+        } else {
+            errorMessage = error.message || 'Unable to access camera/microphone.';
+        }
+        
+        alert(errorMessage);
         throw error;
     }
 }
@@ -266,10 +312,10 @@ async function startRecording() {
         state.videoRecorder.start(100);
         state.isRecording = true;
         state.recordingStartTime = Date.now();
-        state.uiState = 'recording';
         
-        // Update UI
-        elements.btnStop.disabled = false;
+        // 3. Set recording state
+        state.uiState = 'recording';
+        updateUIState('Recording...');
         updateVideoStatus('Recording...', 'recording');
         
         // Start recording timer
@@ -498,9 +544,11 @@ async function processRecording() {
         formData.append('duration', duration.toString());
         
         console.log('Sending verification request to API...');
+        
+        // 3. Set processing state BEFORE API call
         state.uiState = 'processing';
         updateProcessingStatus('Analyzing face...');
-        updateUIState();
+        updateUIState('Processing...');
         
         // Send to API
         const response = await fetch(`${API_BASE}/api/process`, {
@@ -517,7 +565,7 @@ async function processRecording() {
         
         console.log('API Response:', result);
         
-        // Transition UI state based on result
+        // 3. Transition UI state based on result - ALWAYS transition out of processing
         if (result.success === true) {
             state.uiState = 'success';
             updateProcessingStatus('Finalizing result...');
@@ -573,9 +621,9 @@ function updateProcessingStatus(message) {
     }
 }
 
-function updateUIState() {
-    // Update button states
-    if (state.uiState === 'idle') {
+function updateUIState(message = null) {
+    // Update button states based on UI state
+    if (state.uiState === 'idle' || state.uiState === 'camera_ready') {
         elements.btnStart.disabled = false;
         elements.btnStop.disabled = true;
     } else if (state.uiState === 'recording') {
@@ -589,12 +637,18 @@ function updateUIState() {
         elements.btnStop.disabled = true;
     }
     
+    // Update status text if message provided
+    if (message && elements.statusText) {
+        elements.statusText.textContent = message;
+    }
+    
     // Update status banner color
     const statusCard = elements.statusSection.querySelector('.status-card');
     if (statusCard) {
         statusCard.className = 'status-card';
         if (state.uiState === 'processing') {
             statusCard.classList.add('status-processing');
+            elements.statusSection.style.display = 'block';
         } else if (state.uiState === 'success') {
             statusCard.classList.add('status-success');
         } else if (state.uiState === 'failed') {
@@ -673,10 +727,26 @@ function displayResults(result) {
     elements.voiceLivenessValue.textContent = `${voiceLivenessPercent}%`;
     
     // Update lip sync
-    const lipSync = safeNumber(checks.lip_sync) || 0;
-    const lipSyncPercent = Math.round(lipSync * 100);
-    elements.lipSyncBar.style.width = `${lipSyncPercent}%`;
-    elements.lipSyncValue.textContent = `${lipSyncPercent}%`;
+    const lipSync = safeNumber(checks.lip_sync);
+    if (lipSync !== null && lipSync !== undefined) {
+        const lipSyncPercent = Math.round(lipSync * 100);
+        elements.lipSyncBar.style.width = `${lipSyncPercent}%`;
+        elements.lipSyncValue.textContent = `${lipSyncPercent}%`;
+    } else {
+        elements.lipSyncBar.style.width = '0%';
+        elements.lipSyncValue.textContent = '--';
+    }
+    
+    // Update eye blink
+    const eyeBlink = safeNumber(checks.eye_blink);
+    if (eyeBlink !== null && eyeBlink !== undefined) {
+        const eyeBlinkPercent = Math.round(eyeBlink * 100);
+        elements.eyeBlinkBar.style.width = `${eyeBlinkPercent}%`;
+        elements.eyeBlinkValue.textContent = `${eyeBlinkPercent}%`;
+    } else {
+        elements.eyeBlinkBar.style.width = '0%';
+        elements.eyeBlinkValue.textContent = '--';
+    }
     
     // Show error message if present
     if (result.message && !success) {
@@ -701,7 +771,8 @@ function restart() {
     state.videoChunks = [];
     state.audioSamples = [];
     state.isRecording = false;
-    state.uiState = 'idle';
+    // Reset to camera_ready if media stream exists, otherwise idle
+    state.uiState = (state.mediaStream && state.mediaStream.getVideoTracks().length > 0) ? 'camera_ready' : 'idle';
     
     if (state.recordingTimer) {
         clearInterval(state.recordingTimer);
@@ -737,8 +808,13 @@ function restart() {
     elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
     
     // Reset video preview if needed
-    if (state.mediaStream && elements.videoPreview.srcObject !== state.mediaStream) {
-        elements.videoPreview.srcObject = state.mediaStream;
+    if (state.mediaStream) {
+        if (elements.videoBlur.srcObject !== state.mediaStream) {
+            elements.videoBlur.srcObject = state.mediaStream;
+        }
+        if (elements.videoSharp.srcObject !== state.mediaStream) {
+            elements.videoSharp.srcObject = state.mediaStream;
+        }
     }
 }
 

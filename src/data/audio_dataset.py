@@ -365,17 +365,16 @@ class LiveAudioProcessor:
         if len(y.shape) > 1:
             y = y.mean(axis=1)
         
-        # Extract features
+        # Extract features (mfcc shape (120, T), mel_spec shape (128, T))
         mfcc = self.feature_extractor.extract_mfcc(y)
         mel_spec = self.feature_extractor.extract_mel_spectrogram(y)
         
-        # Combine features
-        combined = np.stack([
-            mfcc[:N_MELS, :],
-            mel_spec
-        ], axis=0)
+        # Pad MFCC to N_MELS rows to match training pipeline (2, 128, T)
+        mfcc_padded = np.zeros((N_MELS, mfcc.shape[1]), dtype=mfcc.dtype)
+        mfcc_padded[:mfcc.shape[0], :] = mfcc
+        combined = np.stack([mfcc_padded, mel_spec], axis=0)
         
-        features = torch.tensor(combined, dtype=torch.float32).unsqueeze(0)  # Add batch dim
+        features = torch.tensor(combined, dtype=torch.float32).unsqueeze(0)  # (1, 2, 128, T)
         
         return features
 

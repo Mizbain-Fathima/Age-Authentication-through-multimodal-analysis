@@ -124,69 +124,31 @@ class VoiceLivenessDetector:
         return ""
     
     def _normalize_text(self, text: str) -> str:
-        """Normalize text for comparison - handles number words and digits"""
+        """Normalize text for comparison (text-only captchas)"""
         # Convert to lowercase
         text = text.lower()
         
-        # Number word to digit mapping
-        number_words = {
-            'zero': '0', 'one': '1', 'two': '2', 'three': '3', 'four': '4',
-            'five': '5', 'six': '6', 'seven': '7', 'eight': '8', 'nine': '9'
-        }
+        # Remove punctuation
+        text = re.sub(r'[^\w\s]', '', text)
         
-        # Split into words and convert number words to digits
-        words = text.split()
-        normalized_words = []
-        for word in words:
-            # Remove punctuation from word
-            clean_word = re.sub(r'[^\w]', '', word)
-            if clean_word in number_words:
-                normalized_words.append(number_words[clean_word])
-            else:
-                normalized_words.append(clean_word)
+        # Collapse multiple spaces to single space
+        text = ' '.join(text.split())
         
-        # Join and remove all spaces, commas, and repeated tokens
-        normalized = ''.join(normalized_words)
-        
-        # Remove any remaining non-digit/non-letter characters (except digits and letters)
-        normalized = re.sub(r'[^\w]', '', normalized)
-        
-        # Remove repeated consecutive characters (e.g., "91529152" -> "9152")
-        if len(normalized) > 0:
-            deduplicated = normalized[0]
-            for char in normalized[1:]:
-                if char != deduplicated[-1]:
-                    deduplicated += char
-            normalized = deduplicated
-        
-        return normalized
+        return text.strip()
     
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """
-        Calculate similarity between two texts
-        Uses normalized digit strings for number-based captchas
-        Uses word overlap for text-based captchas (demo-friendly)
+        Calculate similarity between two texts using word overlap ratio
+        Text-only captchas: strict matching with 75% threshold
         """
+        # Normalize both texts
         norm1 = self._normalize_text(text1)
         norm2 = self._normalize_text(text2)
         
         if not norm1 or not norm2:
             return 0.0
         
-        # If both are digit-only strings, use exact or substring matching
-        if norm1.isdigit() and norm2.isdigit():
-            # Exact match
-            if norm1 == norm2:
-                return 1.0
-            # Check if one contains the other (handles repeated numbers)
-            if norm1 in norm2 or norm2 in norm1:
-                return 0.9
-            # Calculate edit distance similarity
-            seq_ratio = SequenceMatcher(None, norm1, norm2).ratio()
-            return seq_ratio
-        
-        # For text captchas (non-numeric), use word overlap ratio
-        # Tokenize and normalize words
+        # Tokenize into words
         def tokenize_text(text):
             # Lowercase, remove punctuation, split into words
             text = text.lower()
@@ -198,8 +160,7 @@ class VoiceLivenessDetector:
         words2 = set(tokenize_text(text2))
         
         if not words1 or not words2:
-            # Fallback to character-level similarity
-            return SequenceMatcher(None, norm1, norm2).ratio()
+            return 0.0
         
         # Calculate word overlap ratio
         common_words = len(words1 & words2)
@@ -207,11 +168,9 @@ class VoiceLivenessDetector:
         
         if expected_words > 0:
             overlap_ratio = common_words / expected_words
-            # Use word overlap for text captchas (more lenient)
             return overlap_ratio
         
-        # Fallback to character-level similarity
-        return SequenceMatcher(None, norm1, norm2).ratio()
+        return 0.0
     
     def verify_captcha(self, audio_data: np.ndarray, expected_text: str,
                        sample_rate: int = SAMPLE_RATE) -> Dict:
@@ -239,31 +198,20 @@ class VoiceLivenessDetector:
                 'reason': 'Failed to transcribe audio'
             }
         
-        # Calculate similarity
+        # Calculate similarity (word overlap ratio)
         similarity = self.calculate_similarity(transcribed_text, expected_text)
         
-        # Determine verification result with relaxed rules for text captchas
-        # Check if expected text is numeric (digit-only after normalization)
-        norm_expected = self._normalize_text(expected_text)
-        is_numeric_captcha = norm_expected.isdigit()
+        # Text captcha: word overlap >= 75% (strict matching)
+        verified = similarity >= 0.75
         
-        if is_numeric_captcha:
-            # Numeric captcha: use original threshold
-            verified = similarity >= self.match_threshold
-            if verified:
-                logger.info("Captcha verified via numeric match")
+        if verified:
+            logger.info(f"Captcha PASS (overlap: {similarity:.1%})")
         else:
-            # Text captcha: use word overlap (>= 0.6 for demo-friendly)
-            verified = similarity >= 0.6
-            if verified:
-                logger.info(f"Captcha verified via text overlap (overlap: {similarity:.1%})")
+            logger.info(f"Captcha FAIL (overlap: {similarity:.1%})")
         
         # Generate detailed reason
         if verified:
-            if is_numeric_captcha:
-                reason = f"Speech matches numeric captcha (similarity: {similarity:.1%})"
-            else:
-                reason = f"Speech matches text captcha (word overlap: {similarity:.1%})"
+            reason = f"Speech matches text captcha (word overlap: {similarity:.1%})"
         elif similarity > 0.3:
             reason = f"Partial match detected (similarity: {similarity:.1%})"
         else:
@@ -277,8 +225,7 @@ class VoiceLivenessDetector:
             'expected_text': expected_text,
             'match_score': similarity,  # Add match_score alias
             'similarity': similarity,
-            'reason': reason,
-            'is_numeric_captcha': is_numeric_captcha
+            'reason': reason
         }
     
     def analyze_voice_characteristics(self, audio_data: np.ndarray,

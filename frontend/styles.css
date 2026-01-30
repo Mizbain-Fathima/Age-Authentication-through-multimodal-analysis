@@ -781,6 +781,13 @@ body {
     margin-top: 0.5rem;
 }
 
+.age-note {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+    font-style: italic;
+}
+
 .group-badge {
     display: inline-block;
     padding: 0.5rem 1.25rem;
@@ -1036,7 +1043,7 @@ header h1 {
     margin-bottom: 2rem;
 }
 
-.video-container {
+.camera-container {
     position: relative;
     max-width: 640px;
     margin: 0 auto;
@@ -1047,11 +1054,68 @@ header h1 {
     border: var(--border-subtle);
 }
 
-#videoPreview {
+/* Blurred background video - full size, darkened, slightly scaled */
+#videoBlur {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
-    transform: scaleX(-1);
+    transform: scaleX(-1) scale(1.1);
+    filter: blur(12px) brightness(0.7);
+    z-index: 1;
+}
+
+/* Sharp foreground video - circular, centered */
+#videoSharp {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scaleX(-1);
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
+    object-fit: cover;
+    clip-path: circle(50%);
+    z-index: 2;
+    box-shadow: 0 0 0 2px rgba(0, 245, 255, 0.3);
+}
+
+/* Circular face ring with glow - above videos */
+.face-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
+    border: 3px solid var(--accent-cyan);
+    box-shadow: 
+        0 0 20px rgba(0, 245, 255, 0.6),
+        0 0 40px rgba(0, 245, 255, 0.4),
+        inset 0 0 20px rgba(0, 245, 255, 0.2);
+    pointer-events: none;
+    z-index: 3;
+    animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+    0%, 100% {
+        box-shadow: 
+            0 0 20px rgba(0, 245, 255, 0.6),
+            0 0 40px rgba(0, 245, 255, 0.4),
+            inset 0 0 20px rgba(0, 245, 255, 0.2);
+        border-color: var(--accent-cyan);
+    }
+    50% {
+        box-shadow: 
+            0 0 30px rgba(0, 245, 255, 0.9),
+            0 0 60px rgba(0, 245, 255, 0.6),
+            inset 0 0 30px rgba(0, 245, 255, 0.4);
+        border-color: rgba(0, 245, 255, 0.9);
+    }
 }
 
 .controls {
@@ -1150,6 +1214,13 @@ header h1 {
     color: var(--text-secondary);
     font-size: 1rem;
     margin-top: 0.5rem;
+}
+
+.age-note {
+    font-size: 0.75rem;
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
+    font-style: italic;
 }
 
 .adult-status {
