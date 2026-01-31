@@ -7,22 +7,27 @@ A production-ready deep learning system for age verification using **live face v
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.103+-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-## 🎯 Core Features
+---
+
+## 🎯 Features
 
 ### Multimodal Age Prediction
-- **Face Age Prediction**: EfficientNet-based CNN with transfer learning
-- **Voice Age Prediction**: MFCC + Mel Spectrogram features with CNN-LSTM
-- **Fusion Network**: Cross-modal attention for robust predictions
+- **Face Age**: EfficientNet-based CNN with transfer learning (ImageNet pretrained)
+- **Voice Age**: MFCC + Mel spectrogram features with lightweight CNN (no LSTM)
+- **Fusion**: Optional cross-modal attention and gated fusion over face + voice
 
 ### Liveness Detection
-- **Face Liveness**: Eye blink detection, head motion, texture analysis
-- **Voice Liveness**: Captcha verification via speech-to-text
+- **Face**: Blink detection (EAR), head motion, texture analysis
+- **Voice**: Captcha verification via speech-to-text (Whisper)
+- **Eye Blink**: MediaPipe-based blink detection
 - **Lip Sync**: Correlation between lip movement and audio
 
-### Output
-- Estimated age (continuous regression)
-- Age group classification (child / teen / adult / senior)
-- Binary 18+ verification with confidence scores
+### Outputs
+- **Estimated age** (continuous, apparent age)
+- **Age group**: child / teen / adult / senior
+- **18+ verification** with confidence scores and liveness breakdown
+
+---
 
 ## 📁 Project Structure
 
@@ -30,300 +35,167 @@ A production-ready deep learning system for age verification using **live face v
 age-authentication/
 ├── src/
 │   ├── api/                  # FastAPI REST API
-│   │   ├── main.py          # Application entry point
-│   │   ├── routes.py        # API endpoints
-│   │   └── services.py      # Business logic
-│   │
-│   ├── data/                 # Data handling
-│   │   ├── data_analysis.py # Dataset analysis & statistics
-│   │   ├── face_dataset.py  # UTKFace PyTorch dataset
-│   │   └── audio_dataset.py # Common Voice PyTorch dataset
-│   │
-│   ├── models/               # Deep learning models
-│   │   ├── face_model.py    # Face age CNN (EfficientNet)
-│   │   ├── voice_model.py   # Voice age CNN-LSTM
-│   │   └── fusion_model.py  # Multimodal fusion network
-│   │
-│   ├── liveness/             # Liveness detection
-│   │   ├── face_liveness.py # Face anti-spoofing
-│   │   ├── voice_liveness.py# Speech verification
-│   │   ├── lip_sync.py      # Audio-visual sync
-│   │   └── captcha.py       # Captcha generation
-│   │
-│   ├── training/             # Model training
-│   │   └── trainer.py       # Training loops
-│   │
-│   └── config.py             # Configuration settings
-│
+│   │   ├── main.py           # App entry, static files, CORS
+│   │   ├── routes.py         # Endpoints
+│   │   └── services.py       # Business logic, age/liveness
+│   ├── data/                 # Datasets & feature extraction
+│   │   ├── data_analysis.py  # UTKFace & Common Voice analysis, splits
+│   │   ├── face_dataset.py   # UTKFace Dataset, LiveAudioProcessor
+│   │   ├── audio_dataset.py  # Common Voice Dataset, MFCC/Mel
+│   │   └── fusion_dataset.py # Age-matched face+audio pairing
+│   ├── models/               # DL models
+│   │   ├── face_model.py     # FaceAgeModel (EfficientNet)
+│   │   ├── voice_model.py   # VoiceAgeModel (CNN)
+│   │   └── fusion_model.py  # MultimodalFusionModel
+│   ├── liveness/             # Liveness components
+│   │   ├── face_liveness.py  # Face crop, liveness
+│   │   ├── voice_liveness.py# Whisper STT, captcha verify
+│   │   ├── lip_sync.py       # Lip-sync verification
+│   │   ├── eye_blink.py      # Blink detection
+│   │   └── captcha.py        # Captcha generation/session
+│   ├── training/             # Training scripts
+│   │   └── trainer.py        # FaceTrainer, VoiceTrainer, FusionTrainer
+│   └── config.py             # Paths, hyperparams, age groups
 ├── frontend/                 # Web UI
 │   ├── index.html
 │   ├── styles.css
 │   └── app.js
-│
-├── image-data/               # UTKFace dataset
-│   └── UTKFace/
-│
-├── audio-data/               # Common Voice dataset
-│   ├── cv-other-train/
-│   ├── cv-other-train.csv
-│   └── ...
-│
-├── models/                   # Saved model checkpoints
-├── logs/                     # Training logs
+├── image-data/UTKFace/        # Face images (optional for training)
+├── audio-data/                # Common Voice (optional for training)
+├── models/                    # Saved checkpoints (face_age_model_best.pth, etc.)
+├── logs/                      # Training logs
+├── run.py                     # CLI entry point
 ├── requirements.txt
-├── run.py                    # Main entry point
 └── README.md
 ```
 
-## 🚀 Quick Start
+---
 
-### 1. Install Dependencies
+## 🚀 Setup & Run
+
+### 1. Environment
 
 ```bash
-# Create virtual environment
+# Create and activate venv
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or
-venv\Scripts\activate     # Windows
+# Windows
+venv\Scripts\activate
+# Linux/Mac
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Run Data Analysis
+### 2. Data (optional, for training)
+
+- **Face**: Place UTKFace images under `image-data/UTKFace/` (filename format: `[age]_[gender]_[race]_[date].jpg`).
+- **Audio**: Place Mozilla Common Voice data under `audio-data/` (CSVs + audio files).
+
+To inspect datasets and splits:
 
 ```bash
 python run.py analyze
 ```
 
-This will:
-- Analyze UTKFace and Common Voice datasets
-- Show age distribution statistics
-- Display class imbalance information
-- Generate visualization plots
+### 3. Train models (optional)
 
-### 3. Train Models
+Pre-trained checkpoints can be placed in `models/`. To train from scratch or resume:
 
 ```bash
-# Train face age model
+# Face model (EfficientNet backbone)
 python run.py train face
+python run.py train face --resume   # resume from checkpoint
 
-# Train voice age model
+# Voice model (MFCC + Mel CNN)
 python run.py train voice
+python run.py train voice --resume
 
-# Train Fusion model
+# Fusion (requires face + voice checkpoints; encoders usually frozen)
 python run.py train fusion
 ```
 
-### 4. Start the API Server
+Checkpoints are saved under `models/` (e.g. `face_age_model_best.pth`, `voice_age_model_best.pth`, `fusion_age_model_best.pth`).
+
+### 4. Start the server
 
 ```bash
 python run.py server
 ```
 
-The server will start at `http://localhost:8000`
+- **Web app**: http://localhost:8000  
+- **API docs (Swagger)**: http://localhost:8000/docs  
+- **Health**: http://localhost:8000/health  
 
-- **Web UI**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
-
-## 🔌 API Endpoints
-
-### Get Captcha
-```http
-GET /api/captcha?complexity=medium
-```
-Returns a random sentence for the user to read aloud.
-
-### Verify Age
-```http
-POST /api/verify
-Content-Type: multipart/form-data
-
-captcha_id: string
-video: file (optional)
-audio: file (optional)
-video_frames: string (base64 JSON array, optional)
-audio_data: string (base64, optional)
-```
-
-### Predict Face Age
-```http
-POST /api/predict/face
-Content-Type: multipart/form-data
-
-image: file
-```
-
-### Predict Voice Age
-```http
-POST /api/predict/voice
-Content-Type: multipart/form-data
-
-audio: file
-```
-
-### Check Face Liveness
-```http
-POST /api/liveness/face
-Content-Type: multipart/form-data
-
-video: file
-```
-
-### Check Voice Liveness
-```http
-POST /api/liveness/voice
-Content-Type: multipart/form-data
-
-captcha_id: string
-audio: file
-```
-
-## 📊 Datasets
-
-### UTKFace (Image Data)
-- **Location**: `image-data/UTKFace/`
-- **Format**: `[age]_[gender]_[race]_[timestamp].jpg`
-- **Samples**: ~21,500 face images
-- **Age Range**: 0-116 years
-
-### Mozilla Common Voice (Audio Data)
-- **Location**: `audio-data/`
-- **Format**: MP3 audio with CSV metadata
-- **Age Categories**: teens, twenties, thirties, ... nineties
-- **Samples**: ~145,000+ with age labels
-
-## 🧠 Model Architecture
-
-### Face Model (EfficientNet-B0)
-```
-EfficientNet-B0 Backbone (pretrained)
-    ↓
-Feature Processor (512 → 256)
-    ↓
-┌─────────────────┬─────────────────┬─────────────────┐
-│   Age Head      │  Age Group Head │   Adult Head    │
-│   (regression)  │  (4-class)      │   (binary)      │
-└─────────────────┴─────────────────┴─────────────────┘
-```
-
-### Voice Model (CNN-LSTM)
-```
-MFCC + Mel Spectrogram Input
-    ↓
-CNN Encoder (Conv → Pool → Residual)
-    ↓
-Bidirectional LSTM (temporal modeling)
-    ↓
-Self-Attention
-    ↓
-┌─────────────────┬─────────────────┬─────────────────┐
-│   Age Head      │  Age Group Head │   Adult Head    │
-│   (regression)  │  (4-class)      │   (binary)      │
-└─────────────────┴─────────────────┴─────────────────┘
-```
-
-### Fusion Model
-```
-Face Features ────→ Cross-Modal Attention ←──── Voice Features
-                           ↓
-                    Gated Fusion
-                           ↓
-                   Fusion Processor
-                           ↓
-          ┌────────────┬────────────┬────────────┐
-          │  Age Head  │ Group Head │ Adult Head │
-          └────────────┴────────────┴────────────┘
-```
-
-## 🔒 Liveness Detection
-
-### Face Liveness Signals
-1. **Eye Blink Detection**: Eye Aspect Ratio (EAR) tracking
-2. **Head Motion**: Pose estimation and movement analysis
-3. **Texture Analysis**: Laplacian variance and frequency analysis
-4. **Temporal Consistency**: Micro-movement patterns
-
-### Voice Liveness Signals
-1. **Captcha Verification**: Speech-to-text matching
-2. **Voice Characteristics**: Pitch, tempo, spectral features
-3. **Naturalness Score**: Combined audio quality metrics
-
-### Lip Sync Verification
-1. **Lip Movement Extraction**: Mouth aspect ratio tracking
-2. **Audio Energy Correlation**: Cross-correlation analysis
-3. **Temporal Alignment**: Lag detection and compensation
-
-## 📈 Training Details
-
-### Data Preprocessing
-- **Images**: Resize to 224×224, normalize, augmentation
-- **Audio**: 16kHz, MFCC (40 coefficients), Mel Spectrogram (128 bands)
-- **Stratified Splits**: 70% train, 15% validation, 15% test
-
-### Training Configuration
-- **Optimizer**: AdamW with weight decay
-- **Scheduler**: Cosine Annealing
-- **Loss**: Multi-task (MAE + CrossEntropy + BCE)
-- **Mixed Precision**: Enabled for GPU training
-
-### Class Balancing
-- Stratified sampling by age group
-- Computed class weights for loss function
-
-## 🎨 Frontend Features
-
-- Modern dark theme with neon accents
-- Real-time webcam preview
-- Audio waveform visualization
-- Step-by-step verification flow
-- Animated processing indicators
-- Detailed result breakdown
-
-## 🛠️ Configuration
-
-Edit `src/config.py` to customize:
-
-```python
-# Model settings
-FACE_BACKBONE = 'efficientnet_b0'
-BATCH_SIZE = 32
-EPOCHS = 50
-LEARNING_RATE = 1e-4
-
-# Liveness thresholds
-BLINK_THRESHOLD = 0.2
-CAPTCHA_MATCH_THRESHOLD = 0.7
-LIP_SYNC_THRESHOLD = 0.6
-
-# Age groups
-AGE_GROUPS = {
-    'child': (0, 12),
-    'teen': (13, 17),
-    'adult': (18, 59),
-    'senior': (60, 120)
-}
-
-AGE_THRESHOLD = 18  # For 18+ verification
-```
-
-## 📄 License
-
-MIT License - see LICENSE file for details.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## 📧 Support
-
-For issues and questions, please open a GitHub issue.
+Default: `0.0.0.0:8000` (config in `src/config.py`: `API_HOST`, `API_PORT`).
 
 ---
 
-**Built with ❤️ using PyTorch, FastAPI, and MediaPipe**
+## 🔄 Workflow
 
+1. **User** opens the web UI, starts verification.
+2. **Captcha**: Client requests a sentence (`GET /api/captcha`), user reads it aloud while on camera.
+3. **Record**: Frontend captures video frames and audio, then sends them in one request (`POST /api/process`).
+4. **Backend**:
+   - Validates captcha (voice liveness).
+   - Runs face liveness, eye blink, lip-sync.
+   - Predicts face age (and voice age if audio is valid).
+   - Fuses age (e.g. 0.6×face + 0.4×voice when both available), computes 18+ and confidence.
+5. **Response**: Success/failure, estimated age, age group, confidence, and liveness breakdown.
+
+---
+
+## 🔌 Main API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/` | Serve frontend (index.html) |
+| GET | `/health` | Health check |
+| GET | `/api/captcha?complexity=medium` | Get captcha sentence and session id |
+| POST | `/api/process` | **Full verification**: video frames + audio; returns age, liveness, success |
+
+See **Swagger** at http://localhost:8000/docs for request/response schemas.
+
+---
+
+## 📊 Datasets (for training)
+
+| Dataset | Location | Purpose |
+|--------|----------|--------|
+| **UTKFace** | `image-data/UTKFace/` | Face age; filename encodes age, gender, race |
+| **Mozilla Common Voice** | `audio-data/` | Voice age; CSV + audio; age categories mapped to numeric age |
+| **Kids audio** (optional) | `kids-audio-data/output/` | Extra child voice samples |
+
+---
+
+## 🧠 Models (high level)
+
+- **Face**: EfficientNet-B0 backbone → feature MLP → age (regression), age_group (4-class), is_adult (binary).
+- **Voice**: Input (B, 2, 128, T) = MFCC-padded + Mel → CNN (depthwise separable + SE + frequency attention) → global pool → MLP → same three heads.
+- **Fusion**: Face + voice encoders (frozen or not) → projection → cross-modal attention → gated fusion → MLP → same three heads.
+
+Details (layers, losses, data pipeline) are in **INTERNAL.md**.
+
+---
+
+## 🛠️ Configuration
+
+Edit `src/config.py` for:
+
+- Paths: `IMAGE_DATA_DIR`, `AUDIO_DATA_DIR`, `MODELS_DIR`, `LOGS_DIR`
+- Image: `FACE_IMAGE_SIZE` (160×160)
+- Audio: `SAMPLE_RATE`, `N_MFCC`, `N_MELS`, `MAX_AUDIO_LENGTH`
+- Model: `FACE_BACKBONE`, `BATCH_SIZE`, `EPOCHS`, `LEARNING_RATE`
+- Age: `AGE_GROUPS`, `AGE_THRESHOLD` (18)
+- Liveness: `CAPTCHA_MATCH_THRESHOLD`, `BLINK_THRESHOLD`, `LIP_SYNC_THRESHOLD`
+- API: `API_HOST`, `API_PORT`
+
+---
+
+## 📄 License
+
+MIT. See LICENSE for details.
+
+---
+
+**Built with PyTorch, FastAPI, MediaPipe, and Whisper**
