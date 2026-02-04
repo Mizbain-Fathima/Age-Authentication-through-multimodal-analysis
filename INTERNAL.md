@@ -29,7 +29,7 @@
 | Fusion | `FUSION_HIDDEN_DIM` | 256 | |
 | | `FUSION_DROPOUT` | 0.4 | |
 | Training | `BATCH_SIZE` | 32 | |
-| | `EPOCHS` | 50 | |
+| | `EPOCHS` | 12 | |
 | | `LEARNING_RATE` | 1e-4 | |
 | | `WEIGHT_DECAY` | 1e-5 | |
 | Liveness | `CAPTCHA_MATCH_THRESHOLD` | 0.7 | Captcha overlap |
