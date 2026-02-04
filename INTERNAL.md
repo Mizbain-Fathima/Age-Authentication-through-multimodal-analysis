@@ -11,7 +11,7 @@
 |----------|-----|---------|--------|
 | Paths | `IMAGE_DATA_DIR` | `image-data/UTKFace` | UTKFace images |
 | | `AUDIO_DATA_DIR` | `audio-data` | Common Voice root |
-| | `KIDS_AUDIO_DATA_DIR` | `kids-audio-data/output` | Kids audio (optional) |
+| | `KIDS_AUDIO_DATA_DIR` | `kids-audio-data/output` | Kids audio |
 | | `MODELS_DIR` | `models` | Checkpoints |
 | | `LOGS_DIR` | `logs` | Training logs |
 | Image | `FACE_IMAGE_SIZE` | (160, 160) | Input to face model |
