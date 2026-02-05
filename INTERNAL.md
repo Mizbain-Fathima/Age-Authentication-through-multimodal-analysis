@@ -56,7 +56,7 @@
 - **Age:** Categorical (teens, twenties, …) mapped via `AUDIO_AGE_MAP` in config to numeric (e.g. twenties → 24).
 - **Parsing:** `DataAnalyzer.analyze_common_voice()` — filter rows with age, add numeric_age, age_group, is_adult; filter by file existence (direct or nested paths).
 - **Splits:** Can use dataset split (train/dev/test) or stratified by age_group.
-- **Kids audio:** Optional; `KIDS_AUDIO_DATA_DIR`; file format e.g. `F10_01_01.wav`; age range `KIDS_AGE_RANGE` (e.g. 5–12).
+- **Kids audio:** `KIDS_AUDIO_DATA_DIR`; file format e.g. `F10_01_01.wav`; age range `KIDS_AGE_RANGE` (e.g. 5–12).
 
 ### 2.3 Fusion (Age-Matched Pairs)
 
