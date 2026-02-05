@@ -351,79 +351,145 @@ class DataAnalyzer:
         
         return df
     
+    def print_kids_audio_statistics(self):
+        """Print statistics for Kids Audio dataset (child age group; Common Voice has no kids)."""
+        if self.kids_audio_data is None:
+            self.analyze_kids_audio()
+        if self.kids_audio_data is None or len(self.kids_audio_data) == 0:
+            print("\n" + "="*60)
+            print("Kids Audio Dataset Statistics")
+            print("="*60)
+            print("\nNo kids audio data found.")
+            print(f"  Expected path: {self.kids_audio_data_dir}")
+            return None
+        df = self.kids_audio_data
+        print("\n" + "="*60)
+        print("Kids Audio Dataset Statistics")
+        print("="*60)
+        print("\nTotal samples: {}".format(len(df)))
+        print("\nNumeric Age Statistics:")
+        print("  Min: {}".format(df['numeric_age'].min()))
+        print("  Max: {}".format(df['numeric_age'].max()))
+        print("  Mean: {:.2f}".format(df['numeric_age'].mean()))
+        print("  Median: {}".format(df['numeric_age'].median()))
+        print("\nAge Distribution (by year):")
+        age_counts = df['numeric_age'].value_counts().sort_index()
+        for age, count in age_counts.items():
+            pct = count / len(df) * 100
+            print("  {}: {} ({:.1f}%)".format(age, count, pct))
+        print("\nAge Group Distribution:")
+        age_group_counts = df['age_group'].value_counts()
+        for group, count in age_group_counts.items():
+            pct = count / len(df) * 100
+            print("  {}: {} ({:.1f}%)".format(group, count, pct))
+        print("\nGender Distribution:")
+        gender_counts = df['gender'].value_counts()
+        for gender, count in gender_counts.items():
+            if pd.notna(gender) and gender != '':
+                pct = count / len(df) * 100
+                print("  {}: {} ({:.1f}%)".format(gender, count, pct))
+        print("\nSource: kids_audio (child speakers only; Common Voice has no kids)")
+        print("\nAdult (18+) Distribution:")
+        print("  Adults (18+): 0 (0.0%)")
+        print("  Minors (<18): {} (100.0%)".format(len(df)))
+        return df
+    
     def plot_distributions(self, save_path=None):
-        """Create visualization plots for both datasets"""
+        """Create visualization plots for face, Common Voice, and Kids Audio datasets."""
         if self.face_data is None:
             self.analyze_utkface()
         if self.audio_data is None:
             self.analyze_common_voice()
-            
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        if self.kids_audio_data is None:
+            self.analyze_kids_audio()
         
-        # Face age histogram
-        axes[0, 0].hist(self.face_data['age'], bins=50, color='steelblue', edgecolor='black', alpha=0.7)
-        axes[0, 0].axvline(x=18, color='red', linestyle='--', label='Age 18')
-        axes[0, 0].set_title('UTKFace: Age Distribution', fontsize=12, fontweight='bold')
-        axes[0, 0].set_xlabel('Age')
-        axes[0, 0].set_ylabel('Count')
-        axes[0, 0].legend()
+        has_kids = self.kids_audio_data is not None and len(self.kids_audio_data) > 0
+        nrows = 3 if has_kids else 2
+        fig, axes = plt.subplots(nrows, 3, figsize=(18, 6 * nrows))
+        if nrows == 2:
+            axes = [axes[0], axes[1], None]
+        else:
+            axes = [axes[0], axes[1], axes[2]]
         
-        # Face age group bar chart
-        age_group_counts = self.face_data['age_group'].value_counts()
         colors = ['#ff6b6b', '#feca57', '#48dbfb', '#1dd1a1']
-        axes[0, 1].bar(age_group_counts.index, age_group_counts.values, color=colors, edgecolor='black')
-        axes[0, 1].set_title('UTKFace: Age Group Distribution', fontsize=12, fontweight='bold')
-        axes[0, 1].set_xlabel('Age Group')
-        axes[0, 1].set_ylabel('Count')
+        
+        # Row 0: Face
+        axes[0][0].hist(self.face_data['age'], bins=50, color='steelblue', edgecolor='black', alpha=0.7)
+        axes[0][0].axvline(x=18, color='red', linestyle='--', label='Age 18')
+        axes[0][0].set_title('UTKFace: Age Distribution', fontsize=12, fontweight='bold')
+        axes[0][0].set_xlabel('Age')
+        axes[0][0].set_ylabel('Count')
+        axes[0][0].legend()
+        age_group_counts = self.face_data['age_group'].value_counts()
+        axes[0][1].bar(age_group_counts.index, age_group_counts.values, color=colors, edgecolor='black')
+        axes[0][1].set_title('UTKFace: Age Group Distribution', fontsize=12, fontweight='bold')
+        axes[0][1].set_xlabel('Age Group')
+        axes[0][1].set_ylabel('Count')
         for i, (group, count) in enumerate(age_group_counts.items()):
-            axes[0, 1].annotate(str(count), xy=(i, count), ha='center', va='bottom')
-        
-        # Face gender distribution
+            axes[0][1].annotate(str(count), xy=(i, count), ha='center', va='bottom')
         gender_counts = self.face_data['gender'].value_counts()
-        axes[0, 2].pie(gender_counts.values, labels=gender_counts.index, autopct='%1.1f%%',
+        axes[0][2].pie(gender_counts.values, labels=gender_counts.index, autopct='%1.1f%%',
                        colors=['#74b9ff', '#fd79a8'], startangle=90)
-        axes[0, 2].set_title('UTKFace: Gender Distribution', fontsize=12, fontweight='bold')
+        axes[0][2].set_title('UTKFace: Gender Distribution', fontsize=12, fontweight='bold')
         
-        # Audio age category distribution
+        # Row 1: Common Voice
         audio_age_counts = self.audio_data['age'].value_counts()
-        axes[1, 0].barh(audio_age_counts.index, audio_age_counts.values, color='coral', edgecolor='black')
-        axes[1, 0].set_title('Common Voice: Age Category Distribution', fontsize=12, fontweight='bold')
-        axes[1, 0].set_xlabel('Count')
-        axes[1, 0].set_ylabel('Age Category')
-        
-        # Audio age group bar chart
+        axes[1][0].barh(audio_age_counts.index, audio_age_counts.values, color='coral', edgecolor='black')
+        axes[1][0].set_title('Common Voice: Age Category Distribution', fontsize=12, fontweight='bold')
+        axes[1][0].set_xlabel('Count')
+        axes[1][0].set_ylabel('Age Category')
         audio_group_counts = self.audio_data['age_group'].value_counts()
-        axes[1, 1].bar(audio_group_counts.index, audio_group_counts.values, color=colors, edgecolor='black')
-        axes[1, 1].set_title('Common Voice: Age Group Distribution', fontsize=12, fontweight='bold')
-        axes[1, 1].set_xlabel('Age Group')
-        axes[1, 1].set_ylabel('Count')
+        axes[1][1].bar(audio_group_counts.index, audio_group_counts.values, color=colors, edgecolor='black')
+        axes[1][1].set_title('Common Voice: Age Group Distribution', fontsize=12, fontweight='bold')
+        axes[1][1].set_xlabel('Age Group')
+        axes[1][1].set_ylabel('Count')
         for i, (group, count) in enumerate(audio_group_counts.items()):
-            axes[1, 1].annotate(str(count), xy=(i, count), ha='center', va='bottom')
-        
-        # Combined adult vs minor comparison
+            axes[1][1].annotate(str(count), xy=(i, count), ha='center', va='bottom')
         face_adult_pct = self.face_data['is_adult'].mean() * 100
         audio_adult_pct = self.audio_data['is_adult'].mean() * 100
-        
         x = np.arange(2)
         width = 0.35
         adult_vals = [face_adult_pct, audio_adult_pct]
         minor_vals = [100 - face_adult_pct, 100 - audio_adult_pct]
+        axes[1][2].bar(x - width/2, adult_vals, width, label='Adult (18+)', color='#27ae60')
+        axes[1][2].bar(x + width/2, minor_vals, width, label='Minor (<18)', color='#e74c3c')
+        axes[1][2].set_xticks(x)
+        axes[1][2].set_xticklabels(['UTKFace', 'Common Voice'])
+        axes[1][2].set_ylabel('Percentage (%)')
+        axes[1][2].set_title('Adult vs Minor Distribution Comparison', fontsize=12, fontweight='bold')
+        axes[1][2].legend()
+        axes[1][2].set_ylim(0, 100)
         
-        bars1 = axes[1, 2].bar(x - width/2, adult_vals, width, label='Adult (18+)', color='#27ae60')
-        bars2 = axes[1, 2].bar(x + width/2, minor_vals, width, label='Minor (<18)', color='#e74c3c')
-        axes[1, 2].set_xticks(x)
-        axes[1, 2].set_xticklabels(['UTKFace', 'Common Voice'])
-        axes[1, 2].set_ylabel('Percentage (%)')
-        axes[1, 2].set_title('Adult vs Minor Distribution Comparison', fontsize=12, fontweight='bold')
-        axes[1, 2].legend()
-        axes[1, 2].set_ylim(0, 100)
+        # Row 2: Kids Audio (when present)
+        if has_kids:
+            kids_df = self.kids_audio_data
+            axes[2][0].hist(kids_df['numeric_age'], bins=range(int(kids_df['numeric_age'].min()), int(kids_df['numeric_age'].max()) + 2),
+                           color='#9b59b6', edgecolor='black', alpha=0.7)
+            axes[2][0].axvline(x=18, color='red', linestyle='--', label='Age 18')
+            axes[2][0].set_title('Kids Audio: Age Distribution', fontsize=12, fontweight='bold')
+            axes[2][0].set_xlabel('Age')
+            axes[2][0].set_ylabel('Count')
+            axes[2][0].legend()
+            kids_group_counts = kids_df['age_group'].value_counts()
+            axes[2][1].bar(kids_group_counts.index, kids_group_counts.values, color=colors[:1], edgecolor='black')
+            axes[2][1].set_title('Kids Audio: Age Group Distribution', fontsize=12, fontweight='bold')
+            axes[2][1].set_xlabel('Age Group')
+            axes[2][1].set_ylabel('Count')
+            for i, (group, count) in enumerate(kids_group_counts.items()):
+                axes[2][1].annotate(str(count), xy=(i, count), ha='center', va='bottom')
+            # Common Voice vs Kids sample counts
+            cv_count = len(self.audio_data)
+            kids_count = len(kids_df)
+            axes[2][2].bar(['Common Voice', 'Kids Audio'], [cv_count, kids_count], color=['coral', '#9b59b6'], edgecolor='black')
+            axes[2][2].set_title('Audio Sources: Common Voice vs Kids', fontsize=12, fontweight='bold')
+            axes[2][2].set_ylabel('Sample Count')
+            for i, v in enumerate([cv_count, kids_count]):
+                axes[2][2].annotate(str(v), xy=(i, v), ha='center', va='bottom', fontweight='bold')
         
         plt.tight_layout()
-        
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             logger.info(f"Saved distribution plots to {save_path}")
-        
         plt.show()
         return fig
     
@@ -568,6 +634,8 @@ def run_full_analysis():
     # Analyze both datasets
     analyzer.print_face_statistics()
     analyzer.print_audio_statistics()
+    analyzer.analyze_kids_audio()
+    analyzer.print_kids_audio_statistics()
     
     # Prepare data with stratification
     print("\n" + "="*60)
