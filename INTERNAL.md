@@ -11,7 +11,7 @@
 |----------|-----|---------|--------|
 | Paths | `IMAGE_DATA_DIR` | `image-data/UTKFace` | UTKFace images |
 | | `AUDIO_DATA_DIR` | `audio-data` | Common Voice root |
-| | `KIDS_AUDIO_DATA_DIR` | `kids-audio-data/output` | Kids audio (optional) |
+| | `KIDS_AUDIO_DATA_DIR` | `kids-audio-data/output` | Kids audio |
 | | `MODELS_DIR` | `models` | Checkpoints |
 | | `LOGS_DIR` | `logs` | Training logs |
 | Image | `FACE_IMAGE_SIZE` | (160, 160) | Input to face model |
@@ -29,7 +29,7 @@
 | Fusion | `FUSION_HIDDEN_DIM` | 256 | |
 | | `FUSION_DROPOUT` | 0.4 | |
 | Training | `BATCH_SIZE` | 32 | |
-| | `EPOCHS` | 50 | |
+| | `EPOCHS` | 12 | |
 | | `LEARNING_RATE` | 1e-4 | |
 | | `WEIGHT_DECAY` | 1e-5 | |
 | Liveness | `CAPTCHA_MATCH_THRESHOLD` | 0.7 | Captcha overlap |

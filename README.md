@@ -17,7 +17,7 @@ A production-ready deep learning system for age verification using **live face v
 - **Fusion**: Optional cross-modal attention and gated fusion over face + voice
 
 ### Liveness Detection
-- **Face**: Blink detection (EAR), head motion, texture analysis
+- **Face**: Blink detection, head motion, texture analysis
 - **Voice**: Captcha verification via speech-to-text (Whisper)
 - **Eye Blink**: MediaPipe-based blink detection
 - **Lip Sync**: Correlation between lip movement and audio
