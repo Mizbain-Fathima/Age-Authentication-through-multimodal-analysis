@@ -123,16 +123,18 @@ class AudioFeatureExtractor:
 class CommonVoiceDataset(Dataset):
     """PyTorch Dataset for Common Voice audio"""
     
-    def __init__(self, dataframe, feature_type='combined', augment=False):
+    def __init__(self, dataframe, feature_type='combined', augment=False, cache_only=False):
         """
         Args:
             dataframe: DataFrame with audio metadata
             feature_type: 'mfcc', 'mel', or 'combined'
             augment: Whether to apply data augmentation
+            cache_only: If True, only include samples with cached features (no recomputation).
+                        Used for baseline training to load cached embeddings only.
         """
-        self.data = dataframe.reset_index(drop=True)
         self.feature_type = feature_type
         self.augment = augment
+        self.cache_only = cache_only
         self.feature_extractor = AudioFeatureExtractor()
         
         # Age group encoding
@@ -141,6 +143,21 @@ class CommonVoiceDataset(Dataset):
 
         self.cache_dir = Path("cache/audio_features")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        df = dataframe.reset_index(drop=True)
+        if cache_only:
+            # Only keep rows that have cached features (do not recompute)
+            valid_indices = []
+            for i in range(len(df)):
+                row = df.iloc[i]
+                audio_path = self._resolve_audio_path(row)
+                cache_file = self.cache_dir / f"{audio_path.stem}.npz"
+                if cache_file.exists():
+                    valid_indices.append(i)
+            self.data = df.iloc[valid_indices].reset_index(drop=True)
+            logger.info(f"Cache-only mode: using {len(self.data)} samples with cached embeddings (skipped {len(df) - len(self.data)} without cache)")
+        else:
+            self.data = df
 
     
     def _augment_audio(self, y):
@@ -207,8 +224,14 @@ class CommonVoiceDataset(Dataset):
 
         cache_file = self.cache_dir / f"{audio_path.stem}.npz"
 
-        # -------- CACHE LOAD --------
-        if cache_file.exists() and not self.augment:
+        # -------- CACHE LOAD (cache_only: load cached embeddings only, no recomputation) --------
+        if self.cache_only:
+            if not cache_file.exists():
+                raise FileNotFoundError(f"Cache-only mode but cache missing: {cache_file}")
+            cached = np.load(cache_file)
+            mfcc = cached["mfcc"]
+            mel = cached["mel"]
+        elif cache_file.exists() and not self.augment:
             cached = np.load(cache_file)
             mfcc = cached["mfcc"]
             mel = cached["mel"]
@@ -274,7 +297,7 @@ def audio_collate_fn(batch):
     }
 
 
-def get_audio_dataloaders(audio_data_dict, batch_size=BATCH_SIZE, num_workers=0, feature_type='combined'):
+def get_audio_dataloaders(audio_data_dict, batch_size=BATCH_SIZE, num_workers=0, feature_type='combined', cache_only=False):
     """
     Create DataLoaders for train, val, test splits
     
@@ -283,13 +306,16 @@ def get_audio_dataloaders(audio_data_dict, batch_size=BATCH_SIZE, num_workers=0,
         batch_size: Batch size for loading
         num_workers: Number of data loading workers (0 for Windows compatibility)
         feature_type: Type of audio features
+        cache_only: If True, only load cached embeddings (no recomputation). Use for baseline training.
     
     Returns:
         Dictionary with train, val, test DataLoaders
     """
-    train_dataset = CommonVoiceDataset(audio_data_dict['train'], feature_type=feature_type, augment=True)
-    val_dataset = CommonVoiceDataset(audio_data_dict['val'], feature_type=feature_type, augment=False)
-    test_dataset = CommonVoiceDataset(audio_data_dict['test'], feature_type=feature_type, augment=False)
+    # When cache_only, do not augment (we only have precomputed features)
+    train_augment = not cache_only
+    train_dataset = CommonVoiceDataset(audio_data_dict['train'], feature_type=feature_type, augment=train_augment, cache_only=cache_only)
+    val_dataset = CommonVoiceDataset(audio_data_dict['val'], feature_type=feature_type, augment=False, cache_only=cache_only)
+    test_dataset = CommonVoiceDataset(audio_data_dict['test'], feature_type=feature_type, augment=False, cache_only=cache_only)
     
     train_loader = DataLoader(
         train_dataset,
