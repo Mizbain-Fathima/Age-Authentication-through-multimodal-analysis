@@ -11,10 +11,15 @@ AUDIO_DATA_DIR = BASE_DIR / "audio-data"
 KIDS_AUDIO_DATA_DIR = BASE_DIR / "kids-audio-data" / "output"
 MODELS_DIR = BASE_DIR / "models"
 LOGS_DIR = BASE_DIR / "logs"
+RESULTS_DIR = BASE_DIR / "results"
 
 # Create directories if they don't exist
 MODELS_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
+RESULTS_DIR.mkdir(exist_ok=True)
+
+# Reproducibility (for baseline training scripts)
+RANDOM_SEED = 42
 
 # Image settings
 IMAGE_SIZE = (200, 200)

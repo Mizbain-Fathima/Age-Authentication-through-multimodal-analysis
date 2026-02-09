@@ -34,13 +34,14 @@ class FusionDataset(Dataset):
           true identity-matched pairs
     """
     
-    def __init__(self, face_df, audio_df, augment=False, age_tolerance=5):
+    def __init__(self, face_df, audio_df, augment=False, age_tolerance=5, cache_only=False):
         """
         Args:
             face_df: DataFrame with face image metadata
             audio_df: DataFrame with audio metadata
             augment: Whether to apply data augmentation
             age_tolerance: Age difference tolerance for pairing (years)
+            cache_only: If True, audio dataset loads cached embeddings only (no recomputation)
         """
         self.face_df = face_df.reset_index(drop=True)
         self.audio_df = audio_df.reset_index(drop=True)
@@ -50,8 +51,8 @@ class FusionDataset(Dataset):
         # Create face dataset for image loading/transforms
         self.face_dataset = UTKFaceDataset(face_df, augment=augment)
         
-        # Create audio dataset for feature extraction
-        self.audio_dataset = CommonVoiceDataset(audio_df, augment=augment)
+        # Create audio dataset (cache_only for baseline: load cached embeddings only)
+        self.audio_dataset = CommonVoiceDataset(audio_df, augment=augment, cache_only=cache_only)
         
         # Build age-based index for efficient pairing
         self._build_age_index()
@@ -147,7 +148,7 @@ def fusion_collate_fn(batch):
     }
 
 
-def get_fusion_dataloaders(batch_size=BATCH_SIZE, num_workers=0, age_tolerance=5):
+def get_fusion_dataloaders(batch_size=BATCH_SIZE, num_workers=0, age_tolerance=5, cache_only=False):
     """
     Create DataLoaders for fusion model training.
     
@@ -155,6 +156,7 @@ def get_fusion_dataloaders(batch_size=BATCH_SIZE, num_workers=0, age_tolerance=5
         batch_size: Batch size for training
         num_workers: Number of data loading workers (0 for Windows)
         age_tolerance: Age difference tolerance for pairing
+        cache_only: If True, audio side loads cached embeddings only (for baseline training)
     
     Returns:
         Dictionary with train, val, test DataLoaders and metadata
@@ -164,26 +166,30 @@ def get_fusion_dataloaders(batch_size=BATCH_SIZE, num_workers=0, age_tolerance=5
     face_data = analyzer.prepare_face_data()
     audio_data = analyzer.prepare_audio_data()
     
+    train_augment = not cache_only
     # Create fusion datasets
     train_dataset = FusionDataset(
         face_data['train'],
         audio_data['train'],
-        augment=True,
-        age_tolerance=age_tolerance
+        augment=train_augment,
+        age_tolerance=age_tolerance,
+        cache_only=cache_only
     )
     
     val_dataset = FusionDataset(
         face_data['val'],
         audio_data['val'],
         augment=False,
-        age_tolerance=age_tolerance
+        age_tolerance=age_tolerance,
+        cache_only=cache_only
     )
     
     test_dataset = FusionDataset(
         face_data['test'],
         audio_data['test'],
         augment=False,
-        age_tolerance=age_tolerance
+        age_tolerance=age_tolerance,
+        cache_only=cache_only
     )
     
     # Create DataLoaders
