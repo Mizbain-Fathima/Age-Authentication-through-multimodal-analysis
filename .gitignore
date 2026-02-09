@@ -6,4 +6,5 @@ logs/
 cache/
 __pycache__/
 .checkpoints/
+*.pth
 *.ckpt
