@@ -134,15 +134,15 @@ class AgeAuthenticationService:
             except Exception as e:
                 logger.warning(f"Could not create voice model: {e}")
         
-        # Try to load fusion model
-        fusion_checkpoint = MODELS_DIR / "fusion_model_best.pth"
-        if fusion_checkpoint.exists():
+        # Try to load multimodal model (joint end-to-end)
+        multimodal_checkpoint = MODELS_DIR / "multimodal_age_model_best.pth"
+        if multimodal_checkpoint.exists():
             try:
-                from src.models.fusion_model import load_fusion_model
-                self.fusion_model = load_fusion_model(str(fusion_checkpoint))
-                logger.info("Loaded fusion model")
+                from src.models.multimodal_model import load_multimodal_model
+                self.fusion_model = load_multimodal_model(str(multimodal_checkpoint))
+                logger.info("Loaded multimodal model")
             except Exception as e:
-                logger.warning(f"Could not load fusion model: {e}")
+                logger.warning(f"Could not load multimodal model: {e}")
     
     def generate_captcha(self, complexity: str = "medium") -> Dict:
         """Generate a new captcha for verification"""

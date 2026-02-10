@@ -269,30 +269,6 @@ class VoiceTrainer(Trainer):
         return loss_dict, predictions, targets
 
 
-class FusionTrainer(Trainer):
-    """Trainer for multimodal fusion model"""
-    
-    def _forward_batch(self, batch, train=True):
-        # This requires paired face-audio data
-        face_input = batch['face'].to(self.device)
-        voice_input = batch['voice'].to(self.device)
-        targets = {
-            'age': batch['age'].to(self.device),
-            'age_group': batch['age_group'].to(self.device),
-            'is_adult': batch['is_adult'].to(self.device)
-        }
-        
-        if train and self.use_amp:
-            with autocast():
-                predictions = self.model(face_input, voice_input)
-                loss_dict = self.criterion(predictions, targets)
-        else:
-            predictions = self.model(face_input, voice_input)
-            loss_dict = self.criterion(predictions, targets)
-        
-        return loss_dict, predictions, targets
-
-
 def train_face_model(resume=False):
     """Train face age prediction model
     
@@ -384,65 +360,15 @@ def train_voice_model(resume=False):
     
     return trainer, history
 
-def train_fusion_model(resume=False):
-    """Train fusion model with paired face+audio data
-    
-    Args:
-        resume: If True, resume training from the last saved checkpoint
-    """
-    from src.data.fusion_dataset import get_fusion_dataloaders
-    from src.models.fusion_model import create_fusion_model, FusionLoss
-
-    loaders = get_fusion_dataloaders(batch_size=16, num_workers=0)  # 0 for Windows compatibility
-
-    # Create fusion model with pretrained encoders
-    face_checkpoint = MODELS_DIR / 'face_age_model_best.pth'
-    voice_checkpoint = MODELS_DIR / 'voice_age_model_best.pth'
-    
-    model = create_fusion_model(
-        face_checkpoint=str(face_checkpoint) if face_checkpoint.exists() else None,
-        voice_checkpoint=str(voice_checkpoint) if voice_checkpoint.exists() else None,
-        freeze_encoders=True
-    )
-    criterion = FusionLoss()
-
-    trainer = FusionTrainer(
-        model=model,
-        train_loader=loaders['train'],
-        val_loader=loaders['val'],
-        criterion=criterion,
-        epochs=8,          
-        model_name='fusion_age_model',
-        use_amp=False
-    )
-    
-    # Resume from checkpoint if requested
-    start_epoch = 0
-    if resume:
-        checkpoint_path = MODELS_DIR / 'fusion_age_model_best.pth'
-        if checkpoint_path.exists():
-            start_epoch = trainer.load_checkpoint('fusion_age_model_best.pth')
-            logger.info(f"Resuming fusion model training from epoch {start_epoch + 1}")
-        else:
-            logger.warning("No checkpoint found, starting from scratch")
-
-    history = trainer.train(early_stopping=3, start_epoch=start_epoch)
-    return trainer, history
-
-
 
 if __name__ == "__main__":
     import argparse
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', choices=['face', 'voice', 'fusion'], default='face')
+    parser.add_argument("--model", choices=["face", "voice"], default="face")
     args = parser.parse_args()
-    
-    if args.model == 'face':
+    if args.model == "face":
         train_face_model()
-    elif args.model == 'voice':
+    elif args.model == "voice":
         train_voice_model()
-    elif args.model == 'fusion':
-        train_fusion_model()
 
 
