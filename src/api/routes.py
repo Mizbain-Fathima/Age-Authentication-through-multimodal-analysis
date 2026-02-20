@@ -164,6 +164,13 @@ class ProcessResponse(BaseModel):
 # API Endpoints
 # =====================
 
+@router.get("/status")
+async def get_status(request: Request):
+    """Return status of loaded models (face, voice, fusion). Use to confirm fusion model is loaded."""
+    auth_service = request.app.state.auth_service
+    return auth_service.get_model_status()
+
+
 @router.post("/process")
 async def process_authentication(
     request: Request,
@@ -188,7 +195,6 @@ async def process_authentication(
             captcha_data = auth_service.generate_captcha('medium')
             captcha_id = captcha_data['captcha_id']
             captcha_sentence = captcha_data['sentence']
-            expires_in = captcha_data['expires_in']
             
             # Store in memory
             captcha_storage[captcha_id] = {
@@ -196,22 +202,24 @@ async def process_authentication(
                 'created_at': time.time()
             }
             
-            # Clean up expired captchas (older than 10 minutes)
+            # Clean up old captchas (older than 15 min); captcha is valid until verify is submitted
             current_time = time.time()
+            max_age = 900  # 15 min max age for cleanup only; single-use on verify
             expired_ids = [
                 cid for cid, data in captcha_storage.items()
-                if current_time - data['created_at'] > 600
+                if current_time - data['created_at'] > max_age
             ]
             for cid in expired_ids:
                 del captcha_storage[cid]
             
             logger.info(f"Generated captcha: {captcha_id[:8]}...")
             
+            # Captcha stays valid until recording stops and verify is submitted (then deleted)
             return {
                 'action': 'start',
                 'captcha_id': captcha_id,
                 'captcha_sentence': captcha_sentence,
-                'expires_in': expires_in,
+                'expires_in': max_age,
                 'message': 'Please read the sentence aloud while recording'
             }
         

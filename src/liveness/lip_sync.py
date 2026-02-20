@@ -127,14 +127,20 @@ class LipSyncVerifier:
         
         return energy
     
-    def verify_sync(self, frames: List[np.ndarray], audio: np.ndarray) -> Dict:
+    def verify_sync(
+        self,
+        frames: List[np.ndarray],
+        audio: np.ndarray,
+        precomputed_mouth_openings: Optional[List[Optional[float]]] = None,
+    ) -> Dict:
         """
-        Verify lip-audio synchronization using Pearson correlation
-        
+        Verify lip-audio synchronization using Pearson correlation.
+        If precomputed_mouth_openings is provided (one float per frame), skip MediaPipe.
+
         Args:
             frames: List of video frames (BGR)
             audio: Audio waveform at self.audio_sample_rate
-        
+            precomputed_mouth_openings: Optional list of mouth opening values per frame
         Returns:
             Verification results with real correlation score
         """
@@ -146,23 +152,31 @@ class LipSyncVerifier:
                 'lag_frames': 0,
                 'reason': 'Insufficient frames for analysis'
             }
-        
-        # Extract lip movement (mouth opening) from frames
-        lip_movements = []
-        valid_frames = 0
-        
-        for frame in frames:
-            mouth_opening = self._extract_lip_features(frame)
-            if mouth_opening is not None:
-                lip_movements.append(mouth_opening)
-                valid_frames += 1
-            else:
-                # Interpolate if face not detected
-                if lip_movements:
-                    lip_movements.append(lip_movements[-1])
+
+        if precomputed_mouth_openings is not None and len(precomputed_mouth_openings) >= len(frames):
+            lip_movements = []
+            valid_frames = 0
+            for i in range(len(frames)):
+                v = precomputed_mouth_openings[i]
+                if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                    lip_movements.append(float(v))
+                    valid_frames += 1
                 else:
-                    lip_movements.append(0.0)
-        
+                    lip_movements.append(lip_movements[-1] if lip_movements else 0.0)
+        else:
+            lip_movements = []
+            valid_frames = 0
+            for frame in frames:
+                mouth_opening = self._extract_lip_features(frame)
+                if mouth_opening is not None:
+                    lip_movements.append(mouth_opening)
+                    valid_frames += 1
+                else:
+                    if lip_movements:
+                        lip_movements.append(lip_movements[-1])
+                    else:
+                        lip_movements.append(0.0)
+
         lip_movement_arr = np.array(lip_movements)
         
         # Check if enough valid frames

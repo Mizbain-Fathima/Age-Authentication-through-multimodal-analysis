@@ -83,7 +83,20 @@ def create_multimodal_model(audio_input_dim, device=DEVICE):
 
 def load_multimodal_model(checkpoint_path, device=DEVICE):
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    audio_dim = ckpt["audio_dim"]
+    state = ckpt.get("model_state_dict") or ckpt
+    # Treat as fusion if model_type says so, or if state dict has fusion keys (e.g. voice_encoder)
+    is_fusion = (
+        ckpt.get("model_type") == "fusion"
+        or (isinstance(state, dict) and any(k.startswith("voice_encoder") for k in state))
+    )
+    if is_fusion:
+        from src.models.fusion_model import load_fusion_model
+        return load_fusion_model(checkpoint_path, device)
+    audio_dim = ckpt.get("audio_dim")
+    if audio_dim is None:
+        from src.config import N_MELS, SAMPLE_RATE, HOP_LENGTH, MAX_AUDIO_LENGTH
+        max_frames = int(MAX_AUDIO_LENGTH * SAMPLE_RATE / HOP_LENGTH)
+        audio_dim = 2 * N_MELS * max_frames
     model = MultimodalAgeModel(audio_input_dim=audio_dim)
     model.load_state_dict(ckpt["model_state_dict"])
     model = model.to(device)

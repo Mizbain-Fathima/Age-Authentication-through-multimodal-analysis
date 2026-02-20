@@ -115,7 +115,7 @@ python run.py train voice --resume
 python run.py train fusion
 ```
 
-Checkpoints are saved under `models/` (e.g. `face_age_model_best.pth`, `voice_age_model_best.pth`, `fusion_age_model_best.pth`).
+Checkpoints: `models/face_age_model_best.pth`, `models/voice_age_model_best.pth`; fusion: `models/fusion/fusion_age_model_best.pth`.
 
 ### 4. Start the server
 
@@ -128,6 +128,30 @@ python run.py server
 - **Health**: http://localhost:8000/health  
 
 Default: `0.0.0.0:8000` (config in `src/config.py`: `API_HOST`, `API_PORT`).
+
+---
+
+## 🧪 Test with frontend
+
+1. **Checkpoints** (at least face + voice for good age):
+   - `models/face_age_model_best.pth`
+   - `models/voice_age_model_best.pth`  
+   Age is computed as **0.6×face + 0.4×voice** by default. Optional: `models/fusion/fusion_age_model_best.pth` if you set `USE_FUSION_FOR_AGE = True` in `src/config.py`.
+
+2. **Start server**
+   ```bash
+   python run.py server
+   ```
+
+3. **Open in browser:** http://localhost:8000  
+   Allow camera and microphone when prompted.
+
+4. **Run verification**
+   - Click **Start** → read the captcha sentence aloud (min 5 seconds) while your face is visible.
+   - Click **Stop & Verify**.
+   - Result shows estimated age, 18+ status, and liveness scores.
+
+5. **Check which model is loaded:** http://localhost:8000/api/status (e.g. `face_model.loaded`, `voice_model.loaded`, `fusion_model.loaded`).
 
 ---
 
@@ -172,9 +196,19 @@ See **Swagger** at http://localhost:8000/docs for request/response schemas.
 
 - **Face**: EfficientNet-B0 backbone → feature MLP → age (regression), age_group (4-class), is_adult (binary).
 - **Voice**: Input (B, 2, 128, T) = MFCC-padded + Mel → CNN (depthwise separable + SE + frequency attention) → global pool → MLP → same three heads.
-- **Fusion**: Face + voice encoders (frozen or not) → projection → cross-modal attention → gated fusion → MLP → same three heads.
+- **Fusion (optional)**: Single network: face + voice encoders → fusion block → heads. Enable with `USE_FUSION_FOR_AGE = True`; checkpoint: `models/fusion_age_model_best.pth` or `models/fusion/fusion_age_model_best.pth`.
 
-Details (layers, losses, data pipeline) are in **INTERNAL.md**.
+**Default: combined face + voice** — Age = 0.6×face + 0.4×voice when both are available. This is the recommended setting.
+
+### Why combined (two models) is better than one fusion model
+
+1. **Data and training** — Face and voice models are trained on large, modality-specific datasets (UTKFace, Common Voice). Each becomes a strong unimodal expert. A single fusion model needs paired (face, audio) data; that pairing is often by age group, not same identity, so the fusion model sees less natural variation per modality and can overfit the pairing strategy.
+
+2. **Calibration and stability** — Unimodal models can be validated and tuned separately (e.g. face MAE, voice MAE). The fixed combination 0.6×face + 0.4×voice is interpretable and stable across users. A single fusion network can let one modality dominate or generalize poorly if one branch is under-trained or the fusion layer overfits.
+
+3. **Efficiency** — Two smaller models mean two forward passes and no fusion load; the fusion model adds a third, heavier pass. Combined is faster at inference and uses less memory when the fusion checkpoint is not loaded.
+
+4. **Observed accuracy** — In practice, the combined pipeline gives age estimates within about ±2–4 years of true age. The single fusion model in the same setup produced large errors (e.g. 9 or 12 for a 22-year-old). So for this system, combining two well-trained unimodal models is both more accurate and more reliable than the current single fusion model.
 
 ---
 

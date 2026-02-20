@@ -438,53 +438,63 @@ class FaceLivenessDetector:
             )
         }
     
-    def analyze_comprehensive(self, frames: List[np.ndarray]) -> Tuple[Dict, Dict, Dict, List]:
+    def analyze_comprehensive(
+        self,
+        frames: List[np.ndarray],
+        precomputed: Optional[List[Dict]] = None,
+        face_crops: Optional[List] = None,
+    ) -> Tuple[Dict, Dict, Dict, List]:
         """
-        Comprehensive single-pass analysis that extracts all metrics at once
-        
+        Comprehensive single-pass analysis that extracts all metrics at once.
+        If precomputed is provided, use it instead of running MediaPipe per frame.
+
         Args:
             frames: List of BGR images
-        
+            precomputed: Optional list of per-frame results (same structure as process_frame);
+                         if provided, MediaPipe is not run.
+            face_crops: Optional list of face crops when using precomputed (same order as frames with face_detected).
+
         Returns:
             Tuple of (liveness_result, blink_info, head_movement, face_crops)
-            - liveness_result: Face liveness analysis
-            - blink_info: Blink analysis details
-            - head_movement: Head movement analysis
-            - face_crops: List of face crops for quality calculation
         """
         self.reset()
-        
+
         frame_results = []
-        face_crops = []
+        face_crops_out = [] if face_crops is None else list(face_crops)
         ear_values = []
         blink_frames = []
         poses = []
-        
-        # Single pass through all frames
-        for frame in frames:
-            result = self.process_frame(frame)
-            frame_results.append(result)
-            
-            # Extract face crop for quality calculation
-            if result['face_detected']:
-                face_crop = self.get_face_crop(frame)
-                if face_crop is not None:
-                    face_crops.append(face_crop)
-            
-            # Collect EAR values for blink analysis
-            if result['face_detected']:
-                ear_values.append(result['ear_value'])
-                if result['blink_detected']:
-                    blink_frames.append(len(ear_values) - 1)
-            
-            # Collect poses for head movement
-            if result['face_detected'] and result['head_pose']:
-                pose = result['head_pose']
-                poses.append({
-                    'pitch': pose['pitch'],
-                    'yaw': pose['yaw'],
-                    'roll': pose['roll']
-                })
+
+        if precomputed is not None:
+            frame_results = list(precomputed)
+            for i, result in enumerate(frame_results):
+                if result.get('face_detected'):
+                    ear_values.append(result.get('ear_value', 0.0))
+                    if result.get('blink_detected'):
+                        blink_frames.append(len(ear_values) - 1)
+                    if result.get('head_pose'):
+                        pose = result['head_pose']
+                        poses.append({'pitch': pose['pitch'], 'yaw': pose['yaw'], 'roll': pose['roll']})
+                        self.pose_history.append((pose['pitch'], pose['yaw'], pose['roll']))
+                if face_crops is None and result.get('face_detected') and i < len(frames):
+                    face_crop = self.get_face_crop(frames[i])
+                    if face_crop is not None:
+                        face_crops_out.append(face_crop)
+        else:
+            for frame in frames:
+                result = self.process_frame(frame)
+                frame_results.append(result)
+                if result['face_detected']:
+                    face_crop = self.get_face_crop(frame)
+                    if face_crop is not None:
+                        face_crops_out.append(face_crop)
+                if result['face_detected']:
+                    ear_values.append(result['ear_value'])
+                    if result['blink_detected']:
+                        blink_frames.append(len(ear_values) - 1)
+                if result['face_detected'] and result['head_pose']:
+                    pose = result['head_pose']
+                    poses.append({'pitch': pose['pitch'], 'yaw': pose['yaw'], 'roll': pose['roll']})
         
         # Aggregate liveness results
         faces_detected = sum(1 for r in frame_results if r['face_detected'])
@@ -622,7 +632,7 @@ class FaceLivenessDetector:
                 'head_pose_changes': pose_changes
             }
         
-        return liveness_result, blink_info, head_movement, face_crops
+        return liveness_result, blink_info, head_movement, face_crops_out
     
     def _calculate_liveness_score(self, face_ratio, blinks, texture, motion, pose_var):
         """Calculate weighted liveness score"""

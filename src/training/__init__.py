@@ -1,3 +1,3 @@
 # Training module
-from .trainer import Trainer, FaceTrainer, VoiceTrainer, FusionTrainer
+from .trainer import Trainer, FaceTrainer, VoiceTrainer
 

@@ -57,6 +57,7 @@ const elements = {
     badgeIcon: document.getElementById('badgeIcon'),
     badgeText: document.getElementById('badgeText'),
     ageNumber: document.getElementById('ageNumber'),
+    ageNote: document.getElementById('ageNote'),
     adultStatus: document.getElementById('adultStatus'),
     adultIcon: document.getElementById('adultIcon'),
     adultText: document.getElementById('adultText'),
@@ -233,17 +234,16 @@ async function startVerification() {
             throw new Error('Failed to get captcha sentence');
         }
         
-        // Store captcha
+        // Store captcha (valid until user stops recording and submits verify)
         state.captchaId = result.captcha_id;
         state.captchaSentence = result.captcha_sentence;
-        state.captchaExpiry = Date.now() + (result.expires_in * 1000);
+        state.captchaExpiry = null; // no time-based expiry; expires when verify is submitted
         
         // Display captcha
         elements.captchaText.textContent = result.captcha_sentence;
         elements.captchaSection.style.display = 'block';
-        
-        // Start captcha timer
-        startCaptchaTimer();
+        elements.captchaTimer.textContent = 'Valid until you stop and verify';
+        elements.captchaTimer.style.display = 'block';
         
         // Step 2: Start recording
         await startRecording();
@@ -329,26 +329,13 @@ async function startRecording() {
 }
 
 function startCaptchaTimer() {
+    // Captcha is valid until user stops recording and submits; no countdown
     if (state.captchaTimer) {
         clearInterval(state.captchaTimer);
+        state.captchaTimer = null;
     }
-    
-    state.captchaTimer = setInterval(() => {
-        const remaining = Math.max(0, state.captchaExpiry - Date.now());
-        const minutes = Math.floor(remaining / 60000);
-        const seconds = Math.floor((remaining % 60000) / 1000);
-        
-        if (remaining > 0) {
-            elements.captchaTimer.textContent = `Expires in: ${minutes}:${seconds.toString().padStart(2, '0')}`;
-            elements.captchaTimer.style.display = 'block';
-        } else {
-            clearInterval(state.captchaTimer);
-            elements.captchaTimer.textContent = 'Captcha expired';
-            if (state.isRecording) {
-                stopAndVerify();
-            }
-        }
-    }, 1000);
+    elements.captchaTimer.textContent = 'Valid until you stop and verify';
+    elements.captchaTimer.style.display = 'block';
 }
 
 function stopAndVerify() {
@@ -694,6 +681,16 @@ function displayResults(result) {
         elements.ageNumber.textContent = Math.round(estimatedAge);
     } else {
         elements.ageNumber.textContent = '--';
+    }
+    // Update age source note
+    const ageSourceLabels = {
+        fusion: 'Based on face + voice (fusion model)',
+        combined: 'Based on face + voice (combined)',
+        face: 'Based on facial appearance',
+        voice: 'Based on voice'
+    };
+    if (elements.ageNote) {
+        elements.ageNote.textContent = ageSourceLabels[result.age_source] || 'Based on face + voice';
     }
     
     // Update adult status

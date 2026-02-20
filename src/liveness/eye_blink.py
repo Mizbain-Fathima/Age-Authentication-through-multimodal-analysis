@@ -122,17 +122,73 @@ class EyeBlinkDetector:
             return float(ear)
         except (IndexError, AttributeError):
             return 0.0
-    
-    
-    def detect_blinks(self, frames: List[np.ndarray]) -> Dict:
+
+    def _detect_blinks_from_precomputed(self, precomputed: List[Dict]) -> Dict:
+        """Run blink state machine on precomputed per-frame results (ear_value or landmarks)."""
+        if not precomputed:
+            return {"blink_count": 0, "blink_score": None}
+        prev_eye_state = "open"
+        closed_frame_count = 0
+        blink_count = 0
+        face_detected = False
+        ear_window = deque(maxlen=3)
+        for result in precomputed:
+            if not result.get("face_detected"):
+                continue
+            face_detected = True
+            if "ear_value" in result and result["ear_value"] > 0:
+                avg_ear = result["ear_value"]
+            elif result.get("landmarks") and len(result["landmarks"]) > max(max(self.LEFT_EYE_INDICES), max(self.RIGHT_EYE_INDICES)):
+                landmarks = result["landmarks"]
+                left_ear = self._calculate_ear(landmarks, self.LEFT_EYE_INDICES)
+                right_ear = self._calculate_ear(landmarks, self.RIGHT_EYE_INDICES)
+                if left_ear == 0.0 and right_ear == 0.0:
+                    continue
+                avg_ear = (left_ear + right_ear) / 2.0
+            else:
+                continue
+            ear_window.append(avg_ear)
+            smoothed_ear = min(ear_window) if ear_window else avg_ear
+            if smoothed_ear < self.EAR_CLOSED:
+                closed_frame_count += 1
+                current_state = "closed" if (closed_frame_count >= 2 or (closed_frame_count == 1 and smoothed_ear < 0.20)) else prev_eye_state
+            elif smoothed_ear > self.EAR_OPEN:
+                current_state = "open"
+                closed_frame_count = 0
+            else:
+                current_state = prev_eye_state
+                if smoothed_ear > self.EAR_CLOSED:
+                    closed_frame_count = 0
+            if prev_eye_state == "closed" and current_state == "open":
+                blink_count += 1
+            prev_eye_state = current_state
+        if not face_detected:
+            return {"blink_count": 0, "blink_score": None}
+        if blink_count == 0:
+            blink_score = 0.0
+        elif blink_count == 1:
+            blink_score = 0.4
+        elif blink_count == 2:
+            blink_score = 0.7
+        else:
+            blink_score = 1.0
+        blink_score = max(0.0, min(1.0, blink_score))
+        logger.info(f"Blink detection: {blink_count} blinks detected, score: {blink_score:.2f}")
+        return {"blink_count": blink_count, "blink_score": float(blink_score)}
+
+    def detect_blinks(
+        self,
+        frames: Optional[List[np.ndarray]] = None,
+        precomputed: Optional[List[Dict]] = None,
+    ) -> Dict:
         """
-        Detect eye blinks in a sequence of video frames
-        
-        Uses state machine: OPEN → CLOSED → OPEN to detect blinks.
-        
+        Detect eye blinks in a sequence of video frames.
+        If precomputed is provided, use it instead of running MediaPipe.
+
         Args:
-            frames: List of BGR images (numpy arrays)
-        
+            frames: List of BGR images (numpy arrays); can be None if precomputed provided.
+            precomputed: Optional list of per-frame dicts with 'face_detected', 'ear_value' or 'landmarks'.
+
         Returns:
             {
                 "blink_count": int,
@@ -147,12 +203,13 @@ class EyeBlinkDetector:
             
             If no face detected → blink_score = None
         """
+        if precomputed is not None:
+            return self._detect_blinks_from_precomputed(precomputed)
         if not frames or len(frames) == 0:
             return {
                 "blink_count": 0,
                 "blink_score": None
             }
-        
         # Blink state machine with temporal smoothing and minimum closed frames (anti-noise)
         prev_eye_state = "open"  # "open" or "closed"
         closed_frame_count = 0  # Consecutive frames with closed eyes

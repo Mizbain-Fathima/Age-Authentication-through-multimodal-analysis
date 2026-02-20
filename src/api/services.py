@@ -6,15 +6,20 @@ import torch
 import numpy as np
 import cv2
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 from loguru import logger
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
-from src.config import DEVICE, MODELS_DIR, AGE_GROUPS, AGE_THRESHOLD
+from src.config import DEVICE, MODELS_DIR, FUSION_MODELS_DIR, AGE_GROUPS, AGE_THRESHOLD, ADULT_THRESHOLD, FRAME_SUBSAMPLE_RATE
+
+# Lip landmark indices (MediaPipe 468) for mouth opening from landmarks
+_UPPER_LIP = [13, 82, 81, 80, 78, 95, 88, 178, 87, 14, 317, 402, 318, 324]
+_LOWER_LIP = [14, 87, 178, 88, 95, 78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308]
 from src.liveness.face_liveness import FaceLivenessDetector
 from src.liveness.voice_liveness import VoiceLivenessDetector
 from src.liveness.lip_sync import LipSyncVerifier
@@ -63,7 +68,61 @@ class AgeAuthenticationService:
         self._load_models()
         
         logger.info("AgeAuthenticationService initialized")
-    
+
+    def _mouth_opening_from_landmarks(self, landmarks, h: int) -> Optional[float]:
+        """Compute mouth opening from landmark list (items with .x .y)."""
+        if not landmarks or len(landmarks) < max(max(_UPPER_LIP), max(_LOWER_LIP)) + 1:
+            return None
+        try:
+            upper_y = np.mean([landmarks[i].y * h for i in _UPPER_LIP if i < len(landmarks)])
+            lower_y = np.mean([landmarks[i].y * h for i in _LOWER_LIP if i < len(landmarks)])
+            return float(abs(upper_y - lower_y))
+        except (IndexError, AttributeError):
+            return None
+
+    def _extract_landmarks_for_frames(self, frames: List[np.ndarray]) -> Tuple[List[Dict], List[np.ndarray]]:
+        """Run MediaPipe once per frame; return per-frame results and face crops. Each result has face_detected, landmarks (or None), mouth_opening (float or None)."""
+        frame_results = []
+        face_crops = []
+        for frame in frames:
+            try:
+                result = self.face_liveness.process_frame(frame)
+            except Exception:
+                result = {"face_detected": False, "landmarks": None, "mouth_opening": None}
+            h, w = frame.shape[:2] if frame is not None and len(frame.shape) >= 2 else (0, 0)
+            landmarks = result.get("landmarks") if result.get("landmarks") is not None else None
+            face_detected = bool(result.get("face_detected", False))
+            mouth_opening = self._mouth_opening_from_landmarks(landmarks, h) if landmarks else None
+            out = {
+                "face_detected": face_detected,
+                "landmarks": landmarks,
+                "mouth_opening": mouth_opening if mouth_opening is not None else None,
+            }
+            for k, v in result.items():
+                if k not in out:
+                    out[k] = v
+            frame_results.append(out)
+            if face_detected and landmarks is not None:
+                try:
+                    x_coords = [lm.x * w for lm in landmarks]
+                    y_coords = [lm.y * h for lm in landmarks]
+                    x1 = int(min(x_coords))
+                    x2 = int(max(x_coords))
+                    y1 = int(min(y_coords))
+                    y2 = int(max(y_coords))
+                    pad = 0.2
+                    bw, bh = x2 - x1, y2 - y1
+                    x1 = max(0, int(x1 - bw * pad))
+                    x2 = min(w, int(x2 + bw * pad))
+                    y1 = max(0, int(y1 - bh * pad))
+                    y2 = min(h, int(y2 + bh * pad))
+                    crop = frame[y1:y2, x1:x2]
+                    if crop.size > 0:
+                        face_crops.append(crop)
+                except (IndexError, AttributeError, TypeError):
+                    pass
+        return frame_results, face_crops
+
     def _safe_float(self, value) -> float:
         """Convert value to float, replacing NaN/Inf with 0.0"""
         try:
@@ -104,45 +163,66 @@ class AgeAuthenticationService:
             try:
                 from src.models.face_model import load_face_model
                 self.face_model = load_face_model(str(face_checkpoint))
+                if self.face_model is not None:
+                    self.face_model.eval()
                 logger.info("Loaded face model")
             except Exception as e:
                 logger.warning(f"Could not load face model: {e}")
         else:
-            # Create default model
             try:
                 from src.models.face_model import create_face_model
                 self.face_model = create_face_model(pretrained=True)
+                if self.face_model is not None:
+                    self.face_model.eval()
                 logger.info("Created default face model (not trained)")
             except Exception as e:
                 logger.warning(f"Could not create face model: {e}")
-        
-        # Try to load voice model
+
         voice_checkpoint = MODELS_DIR / "voice_age_model_best.pth"
         if voice_checkpoint.exists():
             try:
                 from src.models.voice_model import load_voice_model
                 self.voice_model = load_voice_model(str(voice_checkpoint))
+                if self.voice_model is not None:
+                    self.voice_model.eval()
                 logger.info("Loaded voice model")
             except Exception as e:
                 logger.warning(f"Could not load voice model: {e}")
         else:
-            # Create default model
             try:
                 from src.models.voice_model import create_voice_model
                 self.voice_model = create_voice_model()
+                if self.voice_model is not None:
+                    self.voice_model.eval()
                 logger.info("Created default voice model (not trained)")
             except Exception as e:
                 logger.warning(f"Could not create voice model: {e}")
-        
-        # Try to load multimodal model (joint end-to-end)
-        multimodal_checkpoint = MODELS_DIR / "multimodal_age_model_best.pth"
-        if multimodal_checkpoint.exists():
-            try:
-                from src.models.multimodal_model import load_multimodal_model
-                self.fusion_model = load_multimodal_model(str(multimodal_checkpoint))
-                logger.info("Loaded multimodal model")
-            except Exception as e:
-                logger.warning(f"Could not load multimodal model: {e}")
+
+        from src.config import USE_FUSION_FOR_AGE
+        if USE_FUSION_FOR_AGE:
+            # Try models/fusion_age_model_best.pth first, then models/fusion/fusion_age_model_best.pth
+            fusion_checkpoint = MODELS_DIR / "fusion_age_model_best.pth"
+            if not fusion_checkpoint.exists():
+                fusion_checkpoint = FUSION_MODELS_DIR / "fusion_age_model_best.pth"
+            if not fusion_checkpoint.exists():
+                logger.warning(
+                    f"USE_FUSION_FOR_AGE is True but fusion checkpoint not found. "
+                    "Tried: models/fusion_age_model_best.pth and models/fusion/fusion_age_model_best.pth. "
+                    "Train with: python run.py train fusion."
+                )
+            else:
+                try:
+                    from src.models.multimodal_model import load_multimodal_model
+                    self.fusion_model = load_multimodal_model(str(fusion_checkpoint))
+                    if self.fusion_model is not None:
+                        self.fusion_model.eval()
+                        logger.info(f"Loaded fusion model from {fusion_checkpoint}")
+                    else:
+                        logger.warning("load_multimodal_model returned None")
+                except Exception as e:
+                    logger.warning(f"Could not load fusion model: {e}", exc_info=True)
+        else:
+            logger.info("Age estimation: using face + voice combined (fusion model disabled for speed/stability)")
     
     def generate_captcha(self, complexity: str = "medium") -> Dict:
         """Generate a new captcha for verification"""
@@ -430,9 +510,10 @@ class AgeAuthenticationService:
         # Determine age group
         age_group = self._get_age_group(final_age)
         
-        # Is adult
-        is_adult = final_age >= AGE_THRESHOLD
-        adult_confidence = self._safe_float(min(1.0, abs(final_age - AGE_THRESHOLD) / 10 + 0.5))
+        # Is adult (configurable threshold)
+        th = float(ADULT_THRESHOLD)
+        is_adult = final_age >= th
+        adult_confidence = self._safe_float(min(1.0, abs(final_age - th) / 10 + 0.5))
         
         return {
             'age': final_age,
@@ -520,6 +601,54 @@ class AgeAuthenticationService:
             'is_adult': is_adult_prob > 0.5,
             'is_adult_prob': self._safe_float(is_adult_prob)
         }
+
+    def _get_audio_embedding_for_multimodal(self, audio: np.ndarray, sample_rate: int):
+        """Build flattened audio embedding (same format as MultimodalDataset) for the multimodal model."""
+        from src.data.audio_dataset import AudioFeatureExtractor
+        from src.config import SAMPLE_RATE, N_MELS
+        import librosa
+        extractor = AudioFeatureExtractor()
+        if sample_rate != extractor.sample_rate:
+            y = librosa.resample(audio.astype(np.float64), orig_sr=sample_rate, target_sr=extractor.sample_rate)
+        else:
+            y = audio.astype(np.float64)
+        y, _ = librosa.effects.trim(y, top_db=20)
+        max_samples = int(extractor.max_length * extractor.sample_rate)
+        if len(y) > max_samples:
+            y = y[:max_samples]
+        elif len(y) < max_samples:
+            y = np.pad(y, (0, max_samples - len(y)), mode='constant')
+        mfcc = extractor.extract_mfcc(y)
+        mel = extractor.extract_mel_spectrogram(y)
+        mfcc_pad = np.zeros((N_MELS, mfcc.shape[1]), dtype=mfcc.dtype)
+        mfcc_pad[: mfcc.shape[0], :] = mfcc
+        combined = np.stack([mfcc_pad, mel], axis=0)
+        return torch.tensor(combined.flatten(), dtype=torch.float32).unsqueeze(0).to(self.device)
+
+    def _predict_multimodal_age(self, frame: np.ndarray, audio: np.ndarray, sample_rate: int) -> Optional[Dict]:
+        """Run the trained multimodal model; returns {'age': float, 'is_adult': bool} or None on failure."""
+        if self.fusion_model is None or len(audio) == 0:
+            return None
+        face_crop = self.face_liveness.get_face_crop(frame)
+        if face_crop is None:
+            return None
+        from torchvision import transforms
+        from src.config import FACE_IMAGE_SIZE
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(FACE_IMAGE_SIZE),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        face_rgb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
+        image_tensor = transform(face_rgb).unsqueeze(0).to(self.device)
+        audio_tensor = self._get_audio_embedding_for_multimodal(audio, sample_rate)
+        self.fusion_model.eval()
+        with torch.no_grad():
+            out = self.fusion_model(image_tensor, audio_tensor)
+        age = out['age'].item()
+        is_adult = torch.sigmoid(out['is_adult_logit']).item() > 0.5
+        return {'age': self._safe_float(age), 'is_adult': is_adult}
     
     def check_face_liveness(self, frames: List[np.ndarray]) -> Dict:
         """Check face liveness from video frames"""
@@ -625,88 +754,105 @@ class AgeAuthenticationService:
         if expected_captcha_text:
             expected_text = expected_captcha_text
         else:
-            # Fallback: generate captcha internally (should not happen in normal flow)
             captcha_data = self.captcha_session.create_session('medium')
             expected_text = captcha_data['sentence']
-        
-        # 1. Face analysis
-        face_liveness_score = 0.0
-        face_age = None
-        faces_detected = 0
-        blink_detected = False
-        head_movement_detected = False
-        
-        try:
-            face_liveness_result, blink_info, head_movement, face_crops = \
-                self.face_liveness.analyze_comprehensive(frames)
-            
-            faces_detected = face_liveness_result.get('faces_detected', 0)
-            
-            if faces_detected > 0 and len(face_crops) > 0:
-                face_liveness_score = self._safe_float(face_liveness_result.get('liveness_score', 0))
-                blink_detected = blink_info.get('blink_count', 0) > 0
-                head_movement_detected = head_movement.get('motion_detected', False)
-                
-                # Face age prediction
-                try:
-                    if self.face_model is not None and len(frames) > 0:
-                        face_result = self.predict_face_age(frames[-1])
-                        if 'error' not in face_result:
-                            face_age = self._safe_float(face_result.get('age'))
-                except Exception as e:
-                    logger.info(f"Face age prediction failed: {e}")
-            else:
-                logger.info("No faces detected in frames")
-        except Exception as e:
-            logger.info(f"Face analysis failed: {e}")
-        
-        # 2. Voice processing
-        voice_liveness_score = 0.0
-        voice_age = None
-        captcha_verified = False
-        transcription = ""
-        
-        if len(audio) > 0 and expected_text:
+
+        # Frame subsampling: only for longer videos to avoid empty or over-aggressive subsample
+        rate = max(1, int(FRAME_SUBSAMPLE_RATE))
+        if rate > 1 and len(frames) > 10:
+            subsampled = list(frames[::rate])
+            if len(subsampled) > 0:
+                frames = subsampled
+        video_too_short = len(frames) < 5
+
+        # Single-pass landmark extraction for video pipeline
+        precomputed_list, face_crops = self._extract_landmarks_for_frames(frames)
+        mouth_openings = [r.get("mouth_opening") for r in precomputed_list]
+
+        def video_task():
+            face_liveness_score = 0.0
+            face_age = None
+            faces_detected = 0
+            blink_detected = False
+            head_movement_detected = False
             try:
-                voice_liveness_result = self.voice_liveness.verify_captcha(
-                    audio, expected_text, sample_rate
+                face_liveness_result, blink_info, head_movement, _ = self.face_liveness.analyze_comprehensive(
+                    frames, precomputed=precomputed_list, face_crops=face_crops
                 )
-                voice_liveness_score = self._safe_float(voice_liveness_result.get('confidence', 0))
-                captcha_verified = voice_liveness_result.get('verified', False)
-                transcription = voice_liveness_result.get('transcription', '')
-                
-                # No demo fallback - captcha must match strictly
-                
-                # Voice age prediction (optional - don't fail if unavailable)
-                if transcription and self.voice_model is not None:
-                    try:
-                        voice_result = self.predict_voice_age(audio, sample_rate)
-                        if 'error' not in voice_result:
-                            voice_age = self._safe_float(voice_result.get('age'))
-                        else:
-                            logger.info("Voice age prediction returned error, continuing without voice age")
-                    except Exception as e:
-                        logger.info(f"Voice age prediction failed (non-critical): {e}")
-                        # Don't set voice_age, keep it None
+                faces_detected = face_liveness_result.get('faces_detected', 0)
+                if faces_detected > 0 and face_crops:
+                    face_liveness_score = self._safe_float(face_liveness_result.get('liveness_score', 0))
+                    blink_detected = blink_info.get('blink_count', 0) > 0
+                    head_movement_detected = head_movement.get('motion_detected', False)
+                    if self.face_model is not None and frames:
+                        try:
+                            face_result = self.predict_face_age(frames[-1])
+                            if 'error' not in face_result:
+                                face_age = self._safe_float(face_result.get('age'))
+                        except Exception as e:
+                            logger.info(f"Face age prediction failed: {e}")
                 else:
-                    if not transcription:
-                        logger.info("Empty transcription, skipping voice age prediction")
-                    elif self.voice_model is None:
-                        logger.info("Voice model not available, skipping voice age prediction")
+                    logger.info("No faces detected in frames")
             except Exception as e:
-                logger.info(f"Voice processing failed: {e}")
-        else:
-            logger.info("No audio data provided")
-        
-        # 3. Eye blink liveness - run ONLY when: face detected AND video frames available
-        eye_blink_score = None
-        if faces_detected > 0 and len(frames) > 0 and self.eye_blink is not None:
+                logger.info(f"Face analysis failed: {e}")
+            return face_liveness_score, face_age, faces_detected, blink_detected, head_movement_detected
+
+        def audio_task():
+            voice_liveness_score = 0.0
+            voice_age = None
+            captcha_verified = False
+            transcription = ""
+            if len(audio) > 0 and expected_text:
+                try:
+                    voice_liveness_result = self.voice_liveness.verify_captcha(audio, expected_text, sample_rate)
+                    voice_liveness_score = self._safe_float(voice_liveness_result.get('confidence', 0))
+                    captcha_verified = voice_liveness_result.get('verified', False)
+                    transcription = voice_liveness_result.get('transcription', '')
+                    # Run voice age whenever we have audio and voice model so we get combined 0.6*face+0.4*voice (better than face-only)
+                    if self.voice_model is not None:
+                        try:
+                            voice_result = self.predict_voice_age(audio, sample_rate)
+                            if 'error' not in voice_result:
+                                voice_age = self._safe_float(voice_result.get('age'))
+                                if voice_age is not None:
+                                    logger.info(f"Voice age: {voice_age:.1f}")
+                            else:
+                                logger.info("Voice age skipped: prediction returned error")
+                        except Exception as e:
+                            logger.info(f"Voice age prediction failed (non-critical): {e}")
+                    else:
+                        logger.info("Voice age unavailable: voice model not loaded (check models/voice_age_model_best.pth)")
+                except Exception as e:
+                    logger.info(f"Voice processing failed: {e}")
+            return voice_liveness_score, voice_age, captcha_verified, transcription
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_v = executor.submit(video_task)
+            future_a = executor.submit(audio_task)
             try:
-                blink_result = self.eye_blink.detect_blinks(frames)
+                face_liveness_score, face_age, faces_detected, blink_detected, head_movement_detected = future_v.result()
+            except Exception as e:
+                logger.error(f"Video task failed, using face-only fallback: {e}")
+                face_liveness_score, face_age, faces_detected, blink_detected, head_movement_detected = 0.0, None, 0, False, False
+            try:
+                voice_liveness_score, voice_age, captcha_verified, transcription = future_a.result()
+            except Exception as e:
+                logger.error(f"Audio task failed, using safe defaults: {e}")
+                voice_liveness_score, voice_age, captcha_verified, transcription = 0.0, None, False, ""
+
+        # Very short video: skip blink and lip-sync (meaningless with <5 frames)
+        if video_too_short:
+            logger.warning("Video too short for blink/lip-sync analysis")
+            blink_detected = False
+        eye_blink_score = None
+        if video_too_short:
+            eye_blink_score = None
+        elif faces_detected > 0 and len(frames) > 0 and self.eye_blink is not None:
+            try:
+                blink_result = self.eye_blink.detect_blinks(frames=frames, precomputed=precomputed_list)
                 eye_blink_score = blink_result.get('blink_score')
                 if eye_blink_score is not None:
                     eye_blink_score = self._safe_float(eye_blink_score)
-                    # Clamp to [0.0, 1.0]
                     eye_blink_score = max(0.0, min(1.0, eye_blink_score))
                     logger.info(f"Eye blink liveness score: {eye_blink_score:.2f} ({blink_result.get('blink_count', 0)} blinks)")
                 else:
@@ -722,43 +868,69 @@ class AgeAuthenticationService:
             else:
                 logger.info("Eye blink unavailable (detector not initialized)")
             eye_blink_score = None
-        
-        # 4. Lip sync liveness - run ONLY when: face detected AND audio duration >= 3 seconds
+
         lip_sync_score = None
-        audio_duration = len(audio) / sample_rate if sample_rate > 0 else 0
-        if faces_detected > 0 and audio_duration >= 3.0 and self.lip_sync is not None:
-            try:
-                lip_sync_result = self.lip_sync.verify_sync(frames, audio)
-                lip_sync_score = self._safe_float(lip_sync_result.get('confidence', 0))
-                # Clamp to [0.0, 1.0]
-                lip_sync_score = max(0.0, min(1.0, lip_sync_score))
-                logger.info(f"Lip-sync liveness score: {lip_sync_score:.2f}")
-            except Exception as e:
-                logger.info(f"Lip-sync unavailable: {e}")
-                lip_sync_score = None
+        if video_too_short:
+            lip_sync_score = 0.0
         else:
-            if audio_duration < 3.0:
-                logger.info(f"Lip-sync skipped: audio too short ({audio_duration:.1f}s < 3s)")
-            elif faces_detected == 0:
-                logger.info("Lip-sync skipped: no face detected")
+            audio_duration = len(audio) / sample_rate if sample_rate > 0 else 0
+            if faces_detected > 0 and audio_duration >= 3.0 and self.lip_sync is not None:
+                try:
+                    lip_sync_result = self.lip_sync.verify_sync(
+                        frames, audio, precomputed_mouth_openings=mouth_openings
+                    )
+                    lip_sync_score = self._safe_float(lip_sync_result.get('confidence', 0))
+                    lip_sync_score = max(0.0, min(1.0, lip_sync_score))
+                    logger.info(f"Lip-sync liveness score: {lip_sync_score:.2f}")
+                except Exception as e:
+                    logger.info(f"Lip-sync unavailable: {e}")
+                    lip_sync_score = None
             else:
-                logger.info("Lip-sync unavailable (verifier not initialized)")
-            lip_sync_score = None
+                if audio_duration < 3.0:
+                    logger.info(f"Lip-sync skipped: audio too short ({audio_duration:.1f}s < 3s)")
+                elif faces_detected == 0:
+                    logger.info("Lip-sync skipped: no face detected")
+                else:
+                    logger.info("Lip-sync unavailable (verifier not initialized)")
+                lip_sync_score = None
         
-        # 6. Age fusion
-        if face_age is not None and voice_age is not None:
-            estimated_age = self._safe_float(0.6 * face_age + 0.4 * voice_age)
-        elif face_age is not None:
-            estimated_age = face_age
-        elif voice_age is not None:
-            estimated_age = voice_age
-        else:
-            estimated_age = None
-        
+        # 6. Age estimation: use fusion model only if enabled; otherwise use face + voice combined (faster, ±2–4 yr behavior)
+        estimated_age = None
         is_adult = False
-        if estimated_age is not None:
-            is_adult = estimated_age >= AGE_THRESHOLD
-        
+        age_source = None  # "fusion" | "combined" | "face" | "voice"
+        from src.config import USE_FUSION_FOR_AGE
+        if (
+            USE_FUSION_FOR_AGE
+            and self.fusion_model is not None
+            and faces_detected > 0
+            and len(frames) > 0
+            and len(audio) > 0
+            and captcha_verified
+        ):
+            try:
+                multimodal_result = self._predict_multimodal_age(frames[-1], audio, sample_rate)
+                if multimodal_result is not None:
+                    estimated_age = multimodal_result['age']
+                    is_adult = multimodal_result['is_adult']
+                    age_source = "fusion"
+                    logger.info(f"Multimodal model: age={estimated_age:.1f}, is_adult={is_adult}")
+            except Exception as e:
+                logger.warning(f"Multimodal prediction failed, using fallback: {e}")
+        if estimated_age is None:
+            if face_age is not None and voice_age is not None:
+                estimated_age = self._safe_float(0.6 * face_age + 0.4 * voice_age)
+                age_source = "combined"
+            elif face_age is not None:
+                estimated_age = face_age
+                age_source = "face"
+            elif voice_age is not None:
+                estimated_age = voice_age
+                age_source = "voice"
+            else:
+                estimated_age = None
+            if estimated_age is not None:
+                is_adult = estimated_age >= float(ADULT_THRESHOLD)
+
         # 7. Calculate confidence with updated weights
         # face_liveness → 0.45, eye_blink → 0.15 (if available), lip_sync → 0.25 (if available), voice_liveness → 0.15 (if available)
         # NOTE: Low eye_blink (0.4) and lip_sync (0.05-0.15) scores are BY DESIGN and CORRECT
@@ -802,6 +974,9 @@ class AgeAuthenticationService:
             'success': success,
             'estimated_age': self._safe_float(estimated_age) if estimated_age is not None else None,
             'is_adult': is_adult,
+            'age_source': age_source,
+            'face_age': self._safe_float(face_age) if face_age is not None else None,
+            'voice_age': self._safe_float(voice_age) if voice_age is not None else None,
             'confidence': max(0.0, min(1.0, confidence)),  # Clamp to [0, 1]
             'checks': {
                 'face_detected': faces_detected > 0,
@@ -816,9 +991,22 @@ class AgeAuthenticationService:
             'message': 'Verification successful' if success else 'Verification failed'
         }
         
-        # Sanitize all NumPy types before returning
+        # Memory cleanup for large frame lists
+        try:
+            del frames
+        except NameError:
+            pass
+        try:
+            del precomputed_list
+        except NameError:
+            pass
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
         return self._sanitize(response)
-    
+
     def process_live_authentication(
         self,
         captcha_id: str,
