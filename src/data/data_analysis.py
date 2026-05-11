@@ -15,8 +15,15 @@ from loguru import logger
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 from src.config import (
-    IMAGE_DATA_DIR, AUDIO_DATA_DIR, KIDS_AUDIO_DATA_DIR, 
-    AUDIO_AGE_MAP, AGE_GROUPS, KIDS_AGE_RANGE
+    IMAGE_DATA_DIR,
+    AUDIO_DATA_DIR,
+    KIDS_AUDIO_DATA_DIR,
+    AUDIO_AGE_MAP,
+    AGE_GROUPS,
+    KIDS_AGE_RANGE,
+    MODELS_DIR,
+    FUSION_MODELS_DIR,
+    LOGS_DIR,
 )
 
 
@@ -492,7 +499,205 @@ class DataAnalyzer:
             logger.info(f"Saved distribution plots to {save_path}")
         plt.show()
         return fig
-    
+
+    def plot_project_report_figure(self, save_path=None, show=False):
+        """
+        Single PNG with three panels: train vs val curves (from checkpoints), model
+        validation accuracy (face/voice age-group acc; fusion adult acc if stored),
+        and adult vs minor share for UTKFace and Common Voice.
+        """
+        import torch
+
+        if save_path is None:
+            save_path = LOGS_DIR / "project_report_figure.png"
+        save_path = Path(save_path)
+
+        if self.face_data is None:
+            self.analyze_utkface()
+        if self.audio_data is None:
+            self.analyze_common_voice()
+
+        def _history_from_ckpt(ckpt_path: Path):
+            if not ckpt_path.exists():
+                return None
+            try:
+                ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            except Exception as exc:
+                logger.warning(f"Could not load {ckpt_path}: {exc}")
+                return None
+            return ckpt.get("history") or None
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+
+        face_ckpt = MODELS_DIR / "face_age_model_best.pth"
+        voice_ckpt = MODELS_DIR / "voice_age_model_best.pth"
+        fusion_ckpt = FUSION_MODELS_DIR / "fusion_age_model_best.pth"
+
+        history = _history_from_ckpt(face_ckpt)
+        curve_label = "Face"
+        if not history or not history.get("train_loss"):
+            history = _history_from_ckpt(voice_ckpt)
+            curve_label = "Voice"
+
+        ax0 = axes[0]
+        if history and history.get("train_loss"):
+            n = len(history["train_loss"])
+            epochs = np.arange(1, n + 1)
+            ax0.plot(epochs, history["train_loss"], label="Train loss", color="#3498db", linewidth=2)
+            ax0.plot(epochs, history["val_loss"], label="Val loss", color="#2980b9", linewidth=2, linestyle="--")
+            ax0.set_xlabel("Epoch")
+            ax0.set_ylabel("Loss")
+            ax0.set_title(f"Training comparison ({curve_label})", fontsize=12, fontweight="bold")
+            ax0.grid(True, alpha=0.3)
+            if history.get("train_acc") and history.get("val_acc"):
+                ax0b = ax0.twinx()
+                ax0b.plot(epochs, history["train_acc"], label="Train acc", color="#e67e22", linewidth=1.8)
+                ax0b.plot(
+                    epochs,
+                    history["val_acc"],
+                    label="Val acc",
+                    color="#c0392b",
+                    linewidth=1.8,
+                    linestyle="--",
+                )
+                ax0b.set_ylabel("Age-group accuracy (val)")
+                ax0b.set_ylim(0, 1.02)
+                h1, l1 = ax0.get_legend_handles_labels()
+                h2, l2 = ax0b.get_legend_handles_labels()
+                ax0.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=8)
+            else:
+                ax0.legend(loc="upper right", fontsize=9)
+        else:
+            ax0.text(
+                0.5,
+                0.5,
+                "No checkpoint history found.\nTrain face/voice; checkpoints\nsave under models/",
+                ha="center",
+                va="center",
+                transform=ax0.transAxes,
+                fontsize=10,
+            )
+            ax0.set_axis_off()
+            ax0.set_title("Training comparison", fontsize=12, fontweight="bold")
+
+        # Model accuracy: last val age-group acc for face/voice; fusion from checkpoint extras or history
+        models, accs = [], []
+        for name, path in (("Face", face_ckpt), ("Voice", voice_ckpt)):
+            h = _history_from_ckpt(path)
+            if h and h.get("val_acc"):
+                models.append(name)
+                accs.append(float(h["val_acc"][-1]) * 100.0)
+
+        if fusion_ckpt.exists():
+            try:
+                fc = torch.load(fusion_ckpt, map_location="cpu", weights_only=False)
+                fh = fc.get("history") or {}
+                added = False
+                if fh.get("val_acc"):
+                    models.append("Fusion")
+                    accs.append(float(fh["val_acc"][-1]) * 100.0)
+                    added = True
+                if not added:
+                    for key in ("test_adult_accuracy", "val_adult_accuracy", "best_val_adult_acc"):
+                        if key in fc and fc[key] is not None:
+                            v = float(fc[key])
+                            models.append("Fusion")
+                            accs.append(v * 100.0 if v <= 1.0 else v)
+                            break
+            except Exception as exc:
+                logger.warning(f"Could not read fusion metrics: {exc}")
+
+        ax1 = axes[1]
+        if models:
+            colors = ["#3498db", "#9b59b6", "#1abc9c"][: len(models)]
+            bars = ax1.bar(models, accs, color=colors, edgecolor="black", width=0.55)
+            ax1.set_ylabel("Accuracy (%)")
+            ax1.set_title("Model accuracy", fontsize=12, fontweight="bold")
+            ymax = max(accs) if accs else 100.0
+            ax1.set_ylim(0, min(100.0, ymax * 1.12 + 3))
+            for bar, v in zip(bars, accs):
+                ax1.annotate(
+                    f"{v:.1f}%",
+                    xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                    ha="center",
+                    va="bottom",
+                    fontsize=10,
+                )
+            ax1.set_xlabel("Face/Voice: val age-group. Fusion: adult or val acc if present.", fontsize=8)
+        else:
+            ax1.text(
+                0.5,
+                0.5,
+                "No val accuracy in checkpoints.",
+                ha="center",
+                va="center",
+                transform=ax1.transAxes,
+            )
+            ax1.set_axis_off()
+            ax1.set_title("Model accuracy", fontsize=12, fontweight="bold")
+
+        ax2 = axes[2]
+        has_face = self.face_data is not None and len(self.face_data) > 0
+        has_audio = self.audio_data is not None and len(self.audio_data) > 0
+        if has_face and has_audio:
+            face_adult_pct = float(self.face_data["is_adult"].mean()) * 100.0
+            audio_adult_pct = float(self.audio_data["is_adult"].mean()) * 100.0
+            x = np.arange(2)
+            width = 0.35
+            adult_vals = [face_adult_pct, audio_adult_pct]
+            minor_vals = [100.0 - face_adult_pct, 100.0 - audio_adult_pct]
+            ax2.bar(x - width / 2, adult_vals, width, label="Adult (18+)", color="#27ae60", edgecolor="black")
+            ax2.bar(x + width / 2, minor_vals, width, label="Minor (<18)", color="#e74c3c", edgecolor="black")
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(["UTKFace", "Common Voice"])
+            ax2.set_ylabel("Percentage (%)")
+            ax2.legend()
+            ax2.set_ylim(0, 100)
+        elif has_face:
+            adult_pct = float(self.face_data["is_adult"].mean()) * 100.0
+            ax2.bar(
+                ["Adult (18+)", "Minor (<18)"],
+                [adult_pct, 100.0 - adult_pct],
+                color=["#27ae60", "#e74c3c"],
+                edgecolor="black",
+            )
+            ax2.set_ylabel("Percentage (%)")
+            ax2.set_ylim(0, 100)
+            ax2.set_xlabel("UTKFace", fontsize=9)
+        elif has_audio:
+            adult_pct = float(self.audio_data["is_adult"].mean()) * 100.0
+            ax2.bar(
+                ["Adult (18+)", "Minor (<18)"],
+                [adult_pct, 100.0 - adult_pct],
+                color=["#27ae60", "#e74c3c"],
+                edgecolor="black",
+            )
+            ax2.set_ylabel("Percentage (%)")
+            ax2.set_ylim(0, 100)
+            ax2.set_xlabel("Common Voice", fontsize=9)
+        else:
+            ax2.text(
+                0.5,
+                0.5,
+                "No face/audio rows parsed.\nCheck image-data and audio-data paths.",
+                ha="center",
+                va="center",
+                transform=ax2.transAxes,
+                fontsize=10,
+            )
+            ax2.set_axis_off()
+        if has_face or has_audio:
+            ax2.set_title("Adult & minor data distribution", fontsize=12, fontweight="bold")
+
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        logger.info(f"Saved project report figure to {save_path}")
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+        return fig
+
     def get_stratified_splits(self, data, test_size=0.15, val_size=0.15, random_state=42):
         """
         Create stratified train/val/test splits
@@ -654,11 +859,13 @@ def run_full_analysis():
     print(f"  Val samples: {len(audio_data['val'])}")
     print(f"  Test samples: {len(audio_data['test'])}")
     
-    # Save visualizations
-    from src.config import LOGS_DIR
     plot_path = LOGS_DIR / "data_distribution_analysis.png"
     analyzer.plot_distributions(save_path=plot_path)
-    
+
+    report_path = LOGS_DIR / "project_report_figure.png"
+    plt.close("all")
+    analyzer.plot_project_report_figure(save_path=report_path)
+
     return analyzer, face_data, audio_data
 
 

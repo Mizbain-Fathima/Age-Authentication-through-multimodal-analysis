@@ -1198,6 +1198,8 @@ header h1 {
 .age-display {
     text-align: center;
     margin: 2rem 0;
+    display: flex;
+    justify-content: center;
 }
 
 .age-number {
@@ -1223,14 +1225,35 @@ header h1 {
     font-style: italic;
 }
 
+.role-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    text-align: center;
+}
+
+.role-primary {
+    font-size: 2.75rem;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+}
+
+.role-secondary {
+    font-size: 1rem;
+    font-weight: 600;
+    opacity: 0.95;
+}
+
 .adult-status {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.75rem;
     padding: 0.75rem 1.5rem;
     border-radius: var(--radius-md);
     font-weight: 600;
-    margin-bottom: 2rem;
+    margin-bottom: 0;
 }
 
 .adult-status.verified {

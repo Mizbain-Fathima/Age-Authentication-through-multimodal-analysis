@@ -12,7 +12,11 @@ from difflib import SequenceMatcher
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
-from src.config import SAMPLE_RATE, CAPTCHA_MATCH_THRESHOLD
+from src.config import (
+    SAMPLE_RATE,
+    CAPTCHA_MATCH_THRESHOLD,
+    CAPTCHA_NUMERIC_MATCH_THRESHOLD,
+)
 
 
 class VoiceLivenessDetector:
@@ -135,6 +139,46 @@ class VoiceLivenessDetector:
         text = ' '.join(text.split())
         
         return text.strip()
+
+    def _extract_digits_for_numeric_captcha(self, text: str) -> str:
+        """
+        Extract a digit sequence from STT output.
+
+        Supports:
+        - digit strings: "4827"
+        - spaced digits: "4 8 2 7"
+        - digit/number words: "four eight two seven"
+        """
+        t = (text or "").lower()
+
+        number_words = {
+            "zero": "0",
+            "one": "1",
+            "two": "2",
+            "three": "3",
+            "four": "4",
+            "five": "5",
+            "six": "6",
+            "seven": "7",
+            "eight": "8",
+            "nine": "9",
+        }
+
+        # Tokens can be: words ("four") or digit chunks ("4827")
+        tokens = re.findall(r"[a-z]+|\d+", t)
+        digits: list[str] = []
+        for tok in tokens:
+            if tok.isdigit():
+                # If STT returned "4827" as one chunk, split into chars
+                digits.extend(list(tok))
+            else:
+                # Common homophones / variants
+                if tok in ("oh", "o"):
+                    digits.append("0")
+                elif tok in number_words:
+                    digits.append(number_words[tok])
+
+        return "".join(digits)
     
     def calculate_similarity(self, text1: str, text2: str) -> float:
         """
@@ -197,18 +241,64 @@ class VoiceLivenessDetector:
                 'similarity': 0.0,
                 'reason': 'Failed to transcribe audio'
             }
-        
-        # Calculate similarity (word overlap ratio)
+
+        expected = (expected_text or "").strip()
+        expected_is_numeric = bool(re.fullmatch(r"\d+", expected))
+
+        # Numeric captcha path
+        if expected_is_numeric:
+            expected_digits = expected
+            transcribed_digits = self._extract_digits_for_numeric_captcha(transcribed_text)
+
+            if not transcribed_digits:
+                match_ratio = 0.0
+                verified = False
+            else:
+                # Compare per-position; if transcription has extra digits, only consider the first N.
+                n_expected = len(expected_digits)
+                transcribed_digits = transcribed_digits[:n_expected]
+
+                n_comp = min(len(transcribed_digits), n_expected)
+                if n_comp == 0:
+                    match_ratio = 0.0
+                else:
+                    matches = sum(
+                        1 for i in range(n_comp)
+                        if transcribed_digits[i] == expected_digits[i]
+                    )
+                    match_ratio = matches / n_expected  # penalize missing digits
+
+                verified = match_ratio >= CAPTCHA_NUMERIC_MATCH_THRESHOLD
+
+            if verified:
+                logger.info(f"Captcha PASS (numeric match: {match_ratio:.1%})")
+                reason = f"Speech matches numeric captcha ({match_ratio:.1%})"
+            else:
+                logger.info(f"Captcha FAIL (numeric match: {match_ratio:.1%})")
+                reason = f"Speech does not match numeric captcha ({match_ratio:.1%})"
+
+            return {
+                'verified': verified,
+                'confidence': float(match_ratio),
+                'transcription': transcribed_text,
+                'transcribed_text': transcribed_text,
+                'expected_text': expected_text,
+                'match_score': float(match_ratio),
+                'similarity': float(match_ratio),
+                'reason': reason,
+            }
+
+        # Text captcha path (legacy)
         similarity = self.calculate_similarity(transcribed_text, expected_text)
-        
+
         # Text captcha: word overlap >= 75% (strict matching)
         verified = similarity >= 0.75
-        
+
         if verified:
             logger.info(f"Captcha PASS (overlap: {similarity:.1%})")
         else:
             logger.info(f"Captcha FAIL (overlap: {similarity:.1%})")
-        
+
         # Generate detailed reason
         if verified:
             reason = f"Speech matches text captcha (word overlap: {similarity:.1%})"

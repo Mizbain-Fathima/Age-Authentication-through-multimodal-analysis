@@ -33,7 +33,7 @@
             <!-- Captcha Display -->
             <div class="captcha-section" id="captchaSection" style="display: none;">
                 <div class="captcha-card">
-                    <div class="captcha-label">Please read the sentence clearly as shown below:</div>
+                    <div class="captcha-label">Please read the numbers clearly as shown below:</div>
                     <div class="captcha-text" id="captchaText"></div>
                     <div class="captcha-timer" id="captchaTimer" style="display: none;"></div>
                 </div>
@@ -84,17 +84,14 @@
                         <span class="badge-text" id="badgeText">VERIFIED</span>
                     </div>
 
-                    <!-- Age Display -->
+                    <!-- Adult / Minor + Verified / Unverified (green vs red) -->
                     <div class="age-display">
-                        <div class="age-number" id="ageNumber">--</div>
-                        <div class="age-label">Estimated Apparent Age</div>
-                        <div class="age-note" id="ageNote">Based on face + voice</div>
-                    </div>
-
-                    <!-- Adult Status -->
-                    <div class="adult-status" id="adultStatus">
-                        <span class="adult-icon" id="adultIcon">✓</span>
-                        <span class="adult-text" id="adultText">Age 18+ Verified</span>
+                        <div class="adult-status" id="adultStatus">
+                            <div class="role-block">
+                                <div class="role-primary" id="rolePrimary">Minor</div>
+                                <div class="role-secondary" id="roleSecondary">Unverified</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Metrics -->
@@ -153,6 +150,6 @@
         </main>
     </div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=dom-safe-3"></script>
 </body>
 </html>

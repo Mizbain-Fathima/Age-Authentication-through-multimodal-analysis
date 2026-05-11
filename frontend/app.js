@@ -36,44 +36,64 @@ const state = {
 };
 
 // =====================
-// DOM Elements
+// DOM Elements (re-queryable — avoids stale null refs from cache / partial HTML)
 // =====================
 
-const elements = {
-    videoBlur: document.getElementById('videoBlur'),
-    videoSharp: document.getElementById('videoSharp'),
-    videoStatus: document.getElementById('videoStatus'),
-    btnStart: document.getElementById('btnStart'),
-    btnStop: document.getElementById('btnStop'),
-    captchaSection: document.getElementById('captchaSection'),
-    captchaText: document.getElementById('captchaText'),
-    captchaTimer: document.getElementById('captchaTimer'),
-    statusSection: document.getElementById('statusSection'),
-    statusIcon: document.getElementById('statusIcon'),
-    statusText: document.getElementById('statusText'),
-    resultsSection: document.getElementById('resultsSection'),
-    resultCard: document.getElementById('resultCard'),
-    resultBadge: document.getElementById('resultBadge'),
-    badgeIcon: document.getElementById('badgeIcon'),
-    badgeText: document.getElementById('badgeText'),
-    ageNumber: document.getElementById('ageNumber'),
-    ageNote: document.getElementById('ageNote'),
-    adultStatus: document.getElementById('adultStatus'),
-    adultIcon: document.getElementById('adultIcon'),
-    adultText: document.getElementById('adultText'),
-    confidenceBar: document.getElementById('confidenceBar'),
-    confidenceValue: document.getElementById('confidenceValue'),
-    faceLivenessBar: document.getElementById('faceLivenessBar'),
-    faceLivenessValue: document.getElementById('faceLivenessValue'),
-    voiceLivenessBar: document.getElementById('voiceLivenessBar'),
-    voiceLivenessValue: document.getElementById('voiceLivenessValue'),
-        lipSyncBar: document.getElementById('lipSyncBar'),
-        lipSyncValue: document.getElementById('lipSyncValue'),
-        eyeBlinkBar: document.getElementById('eyeBlinkBar'),
-        eyeBlinkValue: document.getElementById('eyeBlinkValue'),
-    errorMessage: document.getElementById('errorMessage'),
-    btnRestart: document.getElementById('btnRestart')
-};
+const elements = {};
+
+function refreshDomRefs() {
+    elements.videoBlur = document.getElementById('videoBlur');
+    elements.videoSharp = document.getElementById('videoSharp');
+    elements.videoStatus = document.getElementById('videoStatus');
+    elements.btnStart = document.getElementById('btnStart');
+    elements.btnStop = document.getElementById('btnStop');
+    elements.captchaSection = document.getElementById('captchaSection');
+    elements.captchaText = document.getElementById('captchaText');
+    elements.captchaTimer = document.getElementById('captchaTimer');
+    elements.statusSection = document.getElementById('statusSection');
+    elements.statusIcon = document.getElementById('statusIcon');
+    elements.statusText = document.getElementById('statusText');
+    elements.resultsSection = document.getElementById('resultsSection');
+    elements.resultCard = document.getElementById('resultCard');
+    elements.resultBadge = document.getElementById('resultBadge');
+    elements.badgeIcon = document.getElementById('badgeIcon');
+    elements.badgeText = document.getElementById('badgeText');
+    elements.adultStatus = document.getElementById('adultStatus');
+    elements.adultIcon = document.getElementById('adultIcon');
+    elements.rolePrimary = document.getElementById('rolePrimary');
+    elements.roleSecondary = document.getElementById('roleSecondary'); // optional (legacy)
+    elements.confidenceBar = document.getElementById('confidenceBar');
+    elements.confidenceValue = document.getElementById('confidenceValue');
+    elements.faceLivenessBar = document.getElementById('faceLivenessBar');
+    elements.faceLivenessValue = document.getElementById('faceLivenessValue');
+    elements.voiceLivenessBar = document.getElementById('voiceLivenessBar');
+    elements.voiceLivenessValue = document.getElementById('voiceLivenessValue');
+    elements.lipSyncBar = document.getElementById('lipSyncBar');
+    elements.lipSyncValue = document.getElementById('lipSyncValue');
+    elements.eyeBlinkBar = document.getElementById('eyeBlinkBar');
+    elements.eyeBlinkValue = document.getElementById('eyeBlinkValue');
+    elements.errorMessage = document.getElementById('errorMessage');
+    elements.btnRestart = document.getElementById('btnRestart');
+}
+
+function setTextContent(node, text) {
+    if (node) node.textContent = text;
+}
+
+function setStyleDisplay(node, value) {
+    if (node) node.style.display = value;
+}
+
+function setClassName(node, className) {
+    if (node) node.className = className;
+}
+
+function setStyleWidthPercent(node, pct) {
+    if (node) node.style.width = `${pct}%`;
+}
+
+// Initial bind (script is at end of <body> — DOM is available)
+refreshDomRefs();
 
 // =====================
 // Initialization
@@ -84,6 +104,11 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function initializeApp() {
+    refreshDomRefs();
+    if (!elements.btnStart || !elements.btnStop || !elements.btnRestart) {
+        console.error('Missing required controls (btnStart / btnStop / btnRestart). Check index.html ids.');
+        return;
+    }
     // Set up event listeners
     elements.btnStart.addEventListener('click', startVerification);
     elements.btnStop.addEventListener('click', stopAndVerify);
@@ -103,6 +128,7 @@ async function initializeApp() {
 // =====================
 
 async function initializeMedia() {
+    refreshDomRefs();
     // 1. Validate video elements exist BEFORE any operations
     if (!elements.videoBlur || !elements.videoSharp) {
         const error = new Error('Video elements not found in DOM');
@@ -190,6 +216,7 @@ async function initializeMedia() {
 }
 
 function updateVideoStatus(text, status) {
+    if (!elements.videoStatus) return;
     const statusText = elements.videoStatus.querySelector('.status-text');
     const statusDot = elements.videoStatus.querySelector('.status-dot');
     
@@ -205,6 +232,7 @@ function updateVideoStatus(text, status) {
 // =====================
 
 async function startVerification() {
+    refreshDomRefs();
     if (!state.mediaStream) {
         showError('Camera/microphone not available. Please refresh the page.');
         return;
@@ -212,6 +240,7 @@ async function startVerification() {
     
     try {
         // Disable button
+        if (!elements.btnStart) return;
         elements.btnStart.disabled = true;
         elements.btnStart.innerHTML = '<span class="btn-icon">⏳</span> Getting captcha...';
         
@@ -240,24 +269,28 @@ async function startVerification() {
         state.captchaExpiry = null; // no time-based expiry; expires when verify is submitted
         
         // Display captcha
-        elements.captchaText.textContent = result.captcha_sentence;
-        elements.captchaSection.style.display = 'block';
-        elements.captchaTimer.textContent = 'Valid until you stop and verify';
-        elements.captchaTimer.style.display = 'block';
+        setTextContent(elements.captchaText, result.captcha_sentence);
+        setStyleDisplay(elements.captchaSection, 'block');
+        setTextContent(elements.captchaTimer, 'Valid until you stop and verify');
+        if (elements.captchaTimer) elements.captchaTimer.style.display = 'block';
         
         // Step 2: Start recording
         await startRecording();
         
         // Update button
-        elements.btnStart.disabled = true;
-        elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Recording...';
+        if (elements.btnStart) {
+            elements.btnStart.disabled = true;
+            elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Recording...';
+        }
         
         console.log('Verification started with captcha');
     } catch (error) {
         console.error('Error starting verification:', error);
         showError(`Failed to start verification: ${error.message}`);
-        elements.btnStart.disabled = false;
-        elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+        if (elements.btnStart) {
+            elements.btnStart.disabled = false;
+            elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+        }
     }
 }
 
@@ -334,8 +367,8 @@ function startCaptchaTimer() {
         clearInterval(state.captchaTimer);
         state.captchaTimer = null;
     }
-    elements.captchaTimer.textContent = 'Valid until you stop and verify';
-    elements.captchaTimer.style.display = 'block';
+    setTextContent(elements.captchaTimer, 'Valid until you stop and verify');
+    if (elements.captchaTimer) elements.captchaTimer.style.display = 'block';
 }
 
 function stopAndVerify() {
@@ -376,8 +409,8 @@ function stopAndVerify() {
         
         // Update UI state
         state.uiState = 'processing';
-        elements.btnStart.disabled = true;
-        elements.btnStop.disabled = true;
+        if (elements.btnStart) elements.btnStart.disabled = true;
+        if (elements.btnStop) elements.btnStop.disabled = true;
         updateVideoStatus('Processing...', 'processing');
         
         // Show processing status
@@ -397,8 +430,8 @@ function stopAndVerify() {
         state.uiState = 'failed';
         showError('Failed to stop recording. Please try again.');
         hideProcessingStatus();
-        elements.btnStart.disabled = false;
-        elements.btnStop.disabled = false;
+        if (elements.btnStart) elements.btnStart.disabled = false;
+        if (elements.btnStop) elements.btnStop.disabled = false;
     }
 }
 
@@ -417,10 +450,10 @@ function startRecordingTimer() {
             stopAndVerify();
         } else if (minRemaining > 0) {
             updateVideoStatus(`Recording... (min ${minRemaining.toFixed(1)}s)`, 'recording');
-            elements.btnStop.disabled = true;
+            if (elements.btnStop) elements.btnStop.disabled = true;
         } else {
             updateVideoStatus(`Recording... ${remaining}s remaining`, 'recording');
-            elements.btnStop.disabled = false;
+            if (elements.btnStop) elements.btnStop.disabled = false;
         }
     }, 100);
 }
@@ -578,6 +611,7 @@ async function processRecording() {
 }
 
 function clearCaptcha() {
+    refreshDomRefs();
     state.captchaId = null;
     state.captchaSentence = null;
     state.captchaExpiry = null;
@@ -585,10 +619,10 @@ function clearCaptcha() {
         clearInterval(state.captchaTimer);
         state.captchaTimer = null;
     }
-    elements.captchaSection.style.display = 'none';
-    elements.captchaText.textContent = '';
-    elements.captchaTimer.textContent = '';
-    elements.captchaTimer.style.display = 'none';
+    setStyleDisplay(elements.captchaSection, 'none');
+    setTextContent(elements.captchaText, '');
+    setTextContent(elements.captchaTimer, '');
+    if (elements.captchaTimer) elements.captchaTimer.style.display = 'none';
 }
 
 // =====================
@@ -596,32 +630,37 @@ function clearCaptcha() {
 // =====================
 
 function showProcessingStatus(message = 'Processing verification...') {
-    elements.statusSection.style.display = 'block';
-    elements.statusIcon.textContent = '⏳';
-    elements.statusText.textContent = message;
-    elements.resultsSection.style.display = 'none';
+    refreshDomRefs();
+    setStyleDisplay(elements.statusSection, 'block');
+    setTextContent(elements.statusIcon, '⏳');
+    setTextContent(elements.statusText, message);
+    setStyleDisplay(elements.resultsSection, 'none');
 }
 
 function updateProcessingStatus(message) {
-    if (elements.statusSection.style.display !== 'none') {
-        elements.statusText.textContent = message;
-    }
+    refreshDomRefs();
+    if (!elements.statusSection || !elements.statusText) return;
+    if (elements.statusSection.style.display === 'none') return;
+    setTextContent(elements.statusText, message);
 }
 
 function updateUIState(message = null) {
+    refreshDomRefs();
     // Update button states based on UI state
-    if (state.uiState === 'idle' || state.uiState === 'camera_ready') {
-        elements.btnStart.disabled = false;
-        elements.btnStop.disabled = true;
-    } else if (state.uiState === 'recording') {
-        elements.btnStart.disabled = true;
-        elements.btnStop.disabled = false;
-    } else if (state.uiState === 'processing') {
-        elements.btnStart.disabled = true;
-        elements.btnStop.disabled = true;
-    } else if (state.uiState === 'success' || state.uiState === 'failed') {
-        elements.btnStart.disabled = false;
-        elements.btnStop.disabled = true;
+    if (elements.btnStart && elements.btnStop) {
+        if (state.uiState === 'idle' || state.uiState === 'camera_ready') {
+            elements.btnStart.disabled = false;
+            elements.btnStop.disabled = true;
+        } else if (state.uiState === 'recording') {
+            elements.btnStart.disabled = true;
+            elements.btnStop.disabled = false;
+        } else if (state.uiState === 'processing') {
+            elements.btnStart.disabled = true;
+            elements.btnStop.disabled = true;
+        } else if (state.uiState === 'success' || state.uiState === 'failed') {
+            elements.btnStart.disabled = false;
+            elements.btnStop.disabled = true;
+        }
     }
     
     // Update status text if message provided
@@ -630,6 +669,7 @@ function updateUIState(message = null) {
     }
     
     // Update status banner color
+    if (!elements.statusSection) return;
     const statusCard = elements.statusSection.querySelector('.status-card');
     if (statusCard) {
         statusCard.className = 'status-card';
@@ -645,122 +685,118 @@ function updateUIState(message = null) {
 }
 
 function hideProcessingStatus() {
-    elements.statusSection.style.display = 'none';
+    refreshDomRefs();
+    setStyleDisplay(elements.statusSection, 'none');
+}
+
+/**
+ * Adult / Minor with Verified (green) vs Unverified (red) on the age card.
+ */
+function setRoleDisplay(isAdult) {
+    refreshDomRefs();
+    if (elements.adultStatus) {
+        elements.adultStatus.className = isAdult ? 'adult-status verified' : 'adult-status not-verified';
+    }
+    setTextContent(elements.adultIcon, isAdult ? '✓' : '✗');
+    setTextContent(elements.rolePrimary, isAdult ? 'Adult' : 'Minor');
+    if (elements.roleSecondary) {
+        setTextContent(elements.roleSecondary, isAdult ? 'Verified' : 'Unverified');
+        setStyleDisplay(elements.roleSecondary, 'block');
+    }
+    const legacy = document.getElementById('adultText');
+    if (legacy) {
+        legacy.textContent = isAdult ? 'Adult · Verified' : 'Minor · Unverified';
+    }
 }
 
 function displayResults(result) {
-    // Show results section
-    elements.resultsSection.style.display = 'block';
-    
-    // Hide error message initially
-    elements.errorMessage.style.display = 'none';
-    
-    // Determine success/failure
-    const success = result.success === true;
-    const checks = result.checks || {};
-    
-    // Update badge
-    if (success) {
-        elements.resultBadge.className = 'result-badge success';
-        elements.badgeIcon.textContent = '✓';
-        elements.badgeText.textContent = 'VERIFIED';
-    } else {
-        elements.resultBadge.className = 'result-badge failure';
-        elements.badgeIcon.textContent = '✗';
-        elements.badgeText.textContent = 'VERIFICATION FAILED';
-        // Show error message if present
-        if (result.message) {
-            elements.errorMessage.textContent = result.message;
-            elements.errorMessage.style.display = 'block';
+    refreshDomRefs();
+    try {
+        setStyleDisplay(elements.resultsSection, 'block');
+        setStyleDisplay(elements.errorMessage, 'none');
+
+        const success = result.success === true;
+        const checks = result.checks || {};
+
+        const isAdult = result.is_adult === true;
+        if (success) {
+            // Top badge follows age gate: adult = verified (green), minor = unverified (red)
+            if (isAdult) {
+                setClassName(elements.resultBadge, 'result-badge success');
+                setTextContent(elements.badgeIcon, '✓');
+                setTextContent(elements.badgeText, 'VERIFIED');
+            } else {
+                setClassName(elements.resultBadge, 'result-badge failure');
+                setTextContent(elements.badgeIcon, '✗');
+                setTextContent(elements.badgeText, 'UNVERIFIED');
+            }
+        } else {
+            setClassName(elements.resultBadge, 'result-badge failure');
+            setTextContent(elements.badgeIcon, '✗');
+            setTextContent(elements.badgeText, 'VERIFICATION FAILED');
+            if (result.message) {
+                setTextContent(elements.errorMessage, result.message);
+                setStyleDisplay(elements.errorMessage, 'block');
+            }
         }
-    }
-    
-    // Update age
-    const estimatedAge = safeNumber(result.estimated_age);
-    if (estimatedAge !== null) {
-        elements.ageNumber.textContent = Math.round(estimatedAge);
-    } else {
-        elements.ageNumber.textContent = '--';
-    }
-    // Update age source note
-    const ageSourceLabels = {
-        fusion: 'Based on face + voice (fusion model)',
-        combined: 'Based on face + voice (combined)',
-        face: 'Based on facial appearance',
-        voice: 'Based on voice'
-    };
-    if (elements.ageNote) {
-        elements.ageNote.textContent = ageSourceLabels[result.age_source] || 'Based on face + voice';
-    }
-    
-    // Update adult status
-    const isAdult = result.is_adult === true;
-    if (isAdult) {
-        elements.adultStatus.className = 'adult-status verified';
-        elements.adultIcon.textContent = '✓';
-        elements.adultText.textContent = 'Age 18+ Verified';
-    } else {
-        elements.adultStatus.className = 'adult-status not-verified';
-        elements.adultIcon.textContent = '✗';
-        elements.adultText.textContent = 'Under 18';
-    }
-    
-    // Update confidence
-    const confidence = safeNumber(result.confidence) || 0;
-    const confidencePercent = Math.round(confidence * 100);
-    elements.confidenceBar.style.width = `${confidencePercent}%`;
-    elements.confidenceValue.textContent = `${confidencePercent}%`;
-    
-    // Update face liveness
-    const faceLiveness = safeNumber(checks.face_liveness) || 0;
-    const faceLivenessPercent = Math.round(faceLiveness * 100);
-    elements.faceLivenessBar.style.width = `${faceLivenessPercent}%`;
-    elements.faceLivenessValue.textContent = `${faceLivenessPercent}%`;
-    
-    // Update voice liveness
-    const voiceLiveness = safeNumber(checks.voice_liveness) || 0;
-    const voiceLivenessPercent = Math.round(voiceLiveness * 100);
-    elements.voiceLivenessBar.style.width = `${voiceLivenessPercent}%`;
-    elements.voiceLivenessValue.textContent = `${voiceLivenessPercent}%`;
-    
-    // Update lip sync
-    const lipSync = safeNumber(checks.lip_sync);
-    if (lipSync !== null && lipSync !== undefined) {
-        const lipSyncPercent = Math.round(lipSync * 100);
-        elements.lipSyncBar.style.width = `${lipSyncPercent}%`;
-        elements.lipSyncValue.textContent = `${lipSyncPercent}%`;
-    } else {
-        elements.lipSyncBar.style.width = '0%';
-        elements.lipSyncValue.textContent = '--';
-    }
-    
-    // Update eye blink
-    const eyeBlink = safeNumber(checks.eye_blink);
-    if (eyeBlink !== null && eyeBlink !== undefined) {
-        const eyeBlinkPercent = Math.round(eyeBlink * 100);
-        elements.eyeBlinkBar.style.width = `${eyeBlinkPercent}%`;
-        elements.eyeBlinkValue.textContent = `${eyeBlinkPercent}%`;
-    } else {
-        elements.eyeBlinkBar.style.width = '0%';
-        elements.eyeBlinkValue.textContent = '--';
-    }
-    
-    // Show error message if present
-    if (result.message && !success) {
-        elements.errorMessage.textContent = result.message;
-        elements.errorMessage.style.display = 'block';
+
+        setRoleDisplay(isAdult);
+
+        const confidence = safeNumber(result.confidence) || 0;
+        const confidencePercent = Math.round(confidence * 100);
+        setStyleWidthPercent(elements.confidenceBar, confidencePercent);
+        setTextContent(elements.confidenceValue, `${confidencePercent}%`);
+
+        const faceLiveness = safeNumber(checks.face_liveness) || 0;
+        const faceLivenessPercent = Math.round(faceLiveness * 100);
+        setStyleWidthPercent(elements.faceLivenessBar, faceLivenessPercent);
+        setTextContent(elements.faceLivenessValue, `${faceLivenessPercent}%`);
+
+        const voiceLiveness = safeNumber(checks.voice_liveness) || 0;
+        const voiceLivenessPercent = Math.round(voiceLiveness * 100);
+        setStyleWidthPercent(elements.voiceLivenessBar, voiceLivenessPercent);
+        setTextContent(elements.voiceLivenessValue, `${voiceLivenessPercent}%`);
+
+        const lipSync = safeNumber(checks.lip_sync);
+        if (lipSync !== null && lipSync !== undefined) {
+            const lipSyncPercent = Math.round(lipSync * 100);
+            setStyleWidthPercent(elements.lipSyncBar, lipSyncPercent);
+            setTextContent(elements.lipSyncValue, `${lipSyncPercent}%`);
+        } else {
+            setStyleWidthPercent(elements.lipSyncBar, 0);
+            setTextContent(elements.lipSyncValue, '--');
+        }
+
+        const eyeBlink = safeNumber(checks.eye_blink);
+        if (eyeBlink !== null && eyeBlink !== undefined) {
+            const eyeBlinkPercent = Math.round(eyeBlink * 100);
+            setStyleWidthPercent(elements.eyeBlinkBar, eyeBlinkPercent);
+            setTextContent(elements.eyeBlinkValue, `${eyeBlinkPercent}%`);
+        } else {
+            setStyleWidthPercent(elements.eyeBlinkBar, 0);
+            setTextContent(elements.eyeBlinkValue, '--');
+        }
+
+        if (result.message && !success) {
+            setTextContent(elements.errorMessage, result.message);
+            setStyleDisplay(elements.errorMessage, 'block');
+        }
+    } catch (e) {
+        console.error('displayResults failed:', e);
     }
 }
 
 function showError(message) {
-    elements.errorMessage.textContent = message;
-    elements.errorMessage.style.display = 'block';
-    elements.resultsSection.style.display = 'block';
-    
-    // Set failure state
-    elements.resultBadge.className = 'result-badge failure';
-    elements.badgeIcon.textContent = '✗';
-    elements.badgeText.textContent = 'ERROR';
+    refreshDomRefs();
+    setTextContent(elements.errorMessage, message);
+    setStyleDisplay(elements.errorMessage, 'block');
+    setStyleDisplay(elements.resultsSection, 'block');
+
+    setRoleDisplay(false);
+
+    setClassName(elements.resultBadge, 'result-badge failure');
+    setTextContent(elements.badgeIcon, '✗');
+    setTextContent(elements.badgeText, 'ERROR');
 }
 
 function restart() {
@@ -797,15 +833,18 @@ function restart() {
     
     // Reset UI
     hideProcessingStatus();
-    elements.resultsSection.style.display = 'none';
-    elements.errorMessage.style.display = 'none';
+    refreshDomRefs();
+    setStyleDisplay(elements.resultsSection, 'none');
+    setStyleDisplay(elements.errorMessage, 'none');
     updateVideoStatus('Camera Ready', 'ready');
     updateUIState();
     
-    elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+    if (elements.btnStart) {
+        elements.btnStart.innerHTML = '<span class="btn-icon">▶</span> Start Verification';
+    }
     
     // Reset video preview if needed
-    if (state.mediaStream) {
+    if (state.mediaStream && elements.videoBlur && elements.videoSharp) {
         if (elements.videoBlur.srcObject !== state.mediaStream) {
             elements.videoBlur.srcObject = state.mediaStream;
         }
